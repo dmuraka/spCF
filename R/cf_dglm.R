@@ -57,8 +57,14 @@
 #'   \code{"prediction"} (default) returns the holdout-calibrated OBSERVATION
 #'   predictive for a new data point (Gaussian: mean uncertainty + residual
 #'   variance; Poisson: negative-binomial count predictive; binomial:
-#'   temperature-calibrated probability with \code{pred_sd = sqrt(p(1-p))}); the
-#'   signal versions are kept in \code{pred_signal}/\code{pred_q_signal}.
+#'   temperature-calibrated probability with \code{pred_sd = sqrt(p(1-p))}).
+#'   Negative binomial (\code{\link{negbin}}): negative-binomial count
+#'   predictive with the fitted dispersion. Other families use a moment-matched
+#'   observation predictive with the holdout-estimated dispersion (Gamma: gamma;
+#'   inverse.gaussian: inverse Gaussian; quasipoisson: negative binomial;
+#'   quasibinomial: beta for proportions, as binomial for 0/1 data; otherwise
+#'   normal), with the mean-uncertainty scale calibrated to 95\% holdout coverage.
+#'   The signal versions are kept in \code{pred_signal}/\code{pred_q_signal}.
 #'   \code{"mean"} returns the signal (mean) uncertainty only (previous
 #'   behaviour). See \code{other$calibration}.
 #' @param se_method Cluster-robust coefficient-SE estimator (used when
@@ -155,7 +161,7 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
   if (!is.null(coords0) && is.null(time0))
     .spcf_stop("'time0' must be supplied together with 'coords0': every prediction site needs a time point.")
 
-  family <- mod_hv$other$family
+  family <- .spcf_prepare_family(mod_hv$other$family)
   bands  <- mod_hv$other$bands
   kernel <- mod_hv$other$kernel
   rho    <- mod_hv$other$rho; Q <- mod_hv$other$Q
@@ -234,6 +240,9 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
     for (k in seq_along(bands)) {
       fobs <- f_obs(f)
       eta  <- .dglm_clip_l(drop(X %*% beta) + tvpart + fobs + offset, family)
+      ## negbin(): re-estimate theta at the current linear predictor (all samples)
+      if (isTRUE(family$spcf_estimate_theta))
+        family <<- .spcf_nb_update(family, y, family$linkinv(eta))
       zw   <- .dglm_work(family, eta, y, offset); z <- zw$z; w <- zw$w
       resid <- z - drop(X %*% beta) - tvpart - fobs  # working residual (z is already offset-free)
       Rp <- matrix(NA_real_, nL, nT); Rp[cbind(pn$lk, pn$tk)] <- resid
@@ -260,6 +269,12 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
 
   ## ---- initialize and run the single sweep
   beta <- stats::glm.fit(X, y, offset = offset, family = family)$coefficients
+  if (isTRUE(family$spcf_estimate_theta)) {                 # negbin(): initial theta
+    for (it in 1:3) {
+      family <- .spcf_nb_update(family, y, family$linkinv(.dglm_clip_l(drop(X %*% beta) + offset, family)))
+      beta   <- stats::glm.fit(X, y, offset = offset, family = family)$coefficients
+    }
+  }
   tvbeta <- if (has_tv) matrix(0, nT, length(tv_cols)) else NULL
   if (has_tv) beta[tv_cols] <- 0                          # constant part holds const_cols only
   q_cur <- if (has_tv && !is.null(q_tvc) && all(is.finite(q_tvc)) && all(q_tvc > 0)) q_tvc else NA_real_
@@ -445,7 +460,7 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
                 time = time, time0 = if (has0) time0 else NULL,
                 x = x, x0 = if (has0) x0 else NULL,
                 time_levels = lev_work, time_levels_train = lev,
-                robust_se = robust_se, se_blocks = G_block)
+                robust_se = robust_se, se_blocks = G_block, family = family)
   result <- list(beta = beta_summ, beta_tv = beta_tv, beta_tv_sd = beta_tv_sd,
                  sd_summary = sd_summary, e_summary = e_summary,
                  pred = pred_ms, pred0 = pred0_ms, pred_q = pred_q, pred0_q = pred0_q,

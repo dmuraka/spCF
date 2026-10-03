@@ -44,3 +44,32 @@ test_that("fixed rho/Q and time-varying coefficients are accepted", {
                              time = s$time, tvc = "v1"))
   expect_s3_class(hv_tvc, "cf_dglm_hv")
 })
+
+test_that("negbin() and poisson(identity) space-time fits", {
+  s <- sim_spacetime(ns = 40, nt = 4, seed = 31)
+  set.seed(31)
+  mu <- exp(0.5 + 0.4 * rep(s$field, s$nt))
+  y  <- rnbinom(length(mu), size = 2, mu = mu)
+  hv <- quiet(cf_dglm_hv(y = y, x = s$x, coords = s$coords, time = s$time,
+                         family = negbin()))
+  expect_true(is.finite(hv$other$family$theta) && hv$other$family$theta > 0)
+  m  <- quiet(cf_dglm(y = y, x = s$x, coords = s$coords, time = s$time, mod_hv = hv))
+  expect_true(all(m$pred$pred > 0) && all(is.finite(m$pred$pred_sd)))
+  yi <- rpois(length(mu), 2 + 0.5 * rep(s$field, s$nt))
+  hi <- quiet(cf_dglm_hv(y = yi, x = s$x, coords = s$coords, time = s$time,
+                         family = poisson(link = "identity")))
+  mi <- quiet(cf_dglm(y = yi, x = s$x, coords = s$coords, time = s$time, mod_hv = hi))
+  expect_true(all(mi$pred$pred > 0) && all(is.finite(mi$pred$pred_sd)))
+})
+
+test_that("Gamma space-time fits get an observation predictive", {
+  s <- sim_spacetime(ns = 40, nt = 4, seed = 32)
+  set.seed(32)
+  mu <- exp(0.3 + 0.4 * rep(s$field, s$nt))
+  y  <- rgamma(length(mu), shape = 4, rate = 4 / mu)
+  hv <- quiet(cf_dglm_hv(y = y, x = s$x, coords = s$coords, time = s$time,
+                         family = Gamma(link = "log")))
+  m  <- quiet(cf_dglm(y = y, x = s$x, coords = s$coords, time = s$time, mod_hv = hv))
+  expect_identical(m$other$calibration$type, "gamma_moment")
+  expect_true(all(is.finite(m$pred$pred_sd)) && all(m$pred$pred_sd > 0))
+})

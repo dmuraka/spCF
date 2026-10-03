@@ -23,8 +23,14 @@
 #'   data point, holdout-calibrated on the \code{cf_glm_hv} validation samples
 #'   (Gaussian: mean uncertainty + residual variance, split-conformal SD
 #'   scaling; Poisson: negative-binomial count predictive; binomial: temperature
-#'   -calibrated probability with \code{pred_sd = sqrt(p(1-p))}). The mean/signal
-#'   versions are kept in \code{pred_signal}/\code{pred_q_signal}.
+#'   -calibrated probability with \code{pred_sd = sqrt(p(1-p))}).
+#'   Negative binomial (\code{\link{negbin}}): negative-binomial count
+#'   predictive with the fitted dispersion. Other families use a moment-matched
+#'   observation predictive with the holdout-estimated dispersion (Gamma: gamma;
+#'   inverse.gaussian: inverse Gaussian; quasipoisson: negative binomial;
+#'   quasibinomial: beta for proportions, as binomial for 0/1 data; otherwise
+#'   normal), with the mean-uncertainty scale calibrated to 95\% holdout coverage.
+#'   The mean/signal versions are kept in \code{pred_signal}/\code{pred_q_signal}.
 #'   \code{"mean"} returns the signal (mean) uncertainty only (previous
 #'   behaviour). See \code{other$calibration} for the fitted calibration.
 #' @param se_method Cluster-robust coefficient-SE estimator (used when
@@ -184,7 +190,7 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
   .spcf_check_data(y = y, x = x, coords = coords, offset = offset)
   .spcf_check_newdata(x = x, x0 = x0, coords0 = coords0, offset0 = offset0)
 
-  family         <- mod_hv$other$family
+  family         <- .spcf_prepare_family(mod_hv$other$family)
   bands          <- mod_hv$other$bands
   bands_all      <- mod_hv$other$bands_all
   coords_uni     <- mod_hv$other$coords_uni
@@ -210,6 +216,14 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
 
   init           <- initial_fun_glm(x=x,y=y,coords=coords,offset=offset,
                                     x_sel=x_sel,family=family,train_rat=1)
+  ## negbin(): re-estimate theta on all samples at the initial GLM
+  if(isTRUE(family$spcf_estimate_theta)){
+    for(it in 1:3){
+      family     <- .spcf_nb_update(family, y, init$gmod$fitted.values)
+      init       <- initial_fun_glm(x=x,y=y,coords=coords,offset=offset,
+                                    x_sel=x_sel,family=family,train_rat=1)
+    }
+  }
   gmod0          <- init$gmod
   beta_int       <- init$beta_int
   beta           <- init$beta
@@ -283,6 +297,10 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
 
         l_pred_off  <- .spcf_clip_l(l_pred, family) + offset
         gmod0       <- glm(y ~ 0 + x + offset(l_pred_off),family=family)
+        if(isTRUE(family$spcf_estimate_theta)){      # negbin(): update theta
+          family    <- .spcf_nb_update(family, y, gmod0$fitted.values)
+          gmod0     <- glm(y ~ 0 + x + offset(l_pred_off),family=family)
+        }
         resid       <- gmod0$residuals
         w           <- gmod0$weights
         beta_int_new<- matrix(gmod0$coefficients)
@@ -558,7 +576,8 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
 
   other          <- list(n=n,n0=n0,nx=nx,y=y,x=x,x0=x0,VCmat=VCmat, #a_mod=a_mod,
                          coords=coords,coords0=coords0,vc=mod_hv$other$vc,
-                         pred_pre=pred_pre, loss_hv=mod_hv$loss_hv, tau=tau)
+                         pred_pre=pred_pre, loss_hv=mod_hv$loss_hv, tau=tau,
+                         family=family)
   result         <- list(beta=beta_int_summ, sd_summary=sd_summary,
                          e_summary=e_summary, pred=pred_ms,pred0=pred0_ms,
                          pred_q=pred_q,pred0_q=pred0_q, bands=bands,

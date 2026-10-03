@@ -23,7 +23,10 @@
 #'   \code{robust_se = TRUE}). \code{"opt"} (default) splits the sandwich
 #'   meat into a field-removed observation-noise part and a field part that adds
 #'   the calibrated field variance back with a within-block \code{exp(-d/h)}
-#'   correlation (\code{h} = median committed bandwidth); this is near-nominal. A refit-free leverage leave-one-out ceiling then caps the field term, preventing over-coverage for count (Poisson) responses while leaving already-calibrated families unchanged.
+#'   correlation (\code{h} = median committed bandwidth); this is near-nominal.
+#'   For \code{cf_lm} the noise part is rescaled to a nugget (observation-noise
+#'   variance) estimated from nearest-neighbour differences of the fixed-effect
+#'   residuals, because the in-sample residual is shrunk by the fitted field. A refit-free leverage leave-one-out ceiling then caps the field term, preventing over-coverage for count (Poisson) responses while leaving already-calibrated families unchanged.
 #'   \code{"classic"} keeps the realised field inside the working residual (the
 #'   previous behaviour), which is valid but conservative.
 #'
@@ -392,7 +395,8 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
   if(robust_se && se_method=="opt" && n_bid>0 && exists("b")){
     ofse <- tryCatch(.spcf_optfield_SE(y=y, X=x, beta=beta_int, field=b,
                                        s_f=sqrt(fv_cal), offset=NULL,
-                                       family=gaussian(), coords=coords, bands=bands),
+                                       family=gaussian(), coords=coords, bands=bands,
+                                       noise_var=.spcf_nugget_nn(y, x, coords)),
                      error=function(e) NULL)
     if(!is.null(ofse) && all(is.finite(diag(ofse$V))) && all(diag(ofse$V) > 0)){
       beta_int_vmat <- ofse$V

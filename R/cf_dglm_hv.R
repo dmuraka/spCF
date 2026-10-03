@@ -33,6 +33,11 @@
 #' @param family Error distribution and link function, consistent with the
 #'   \code{family} argument of \code{\link{glm}}. Functionality has been
 #'   confirmed for \code{gaussian()}, \code{poisson()}, and \code{binomial()}.
+#'   Negative binomial responses: \code{\link{negbin}()} estimates the
+#'   dispersion \eqn{\theta} (re-estimated on the training samples after each
+#'   accepted scale); \code{negbin(theta)} or \code{MASS::negative.binomial(theta)}
+#'   keeps it fixed. \code{poisson(link = "identity")} is supported with the mean
+#'   floored at a small positive value.
 #' @param rho,Q Optional AR(1) temporal parameters (autocorrelation and
 #'   innovation variance). When \code{NULL} (default) a single global
 #'   \code{(rho, Q)} is estimated by maximum marginal likelihood.
@@ -87,6 +92,7 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
 
   .spcf_check_data(y = y, x = x, coords = coords, offset = offset, time = time)
   .spcf_check_hv_args(length(y), train_rat, id_train, alpha, kernel)
+  family <- .spcf_prepare_family(family)
   if (!is.null(q_tvc) && (!is.numeric(q_tvc) || anyNA(q_tvc) ||
                           any(!is.finite(q_tvc)) || any(q_tvc <= 0)))
     .spcf_stop("'q_tvc' must be positive and finite (a scalar, or one value per covariate in 'tvc').")
@@ -160,6 +166,14 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
 
   ## ---- linearize once: pooled GLM working response/weight (Gaussian surrogate)
   beta <- stats::glm.fit(x, y, offset = offset, family = family)$coefficients
+  ## negbin(): estimate theta on the training observations at the pooled GLM
+  if (isTRUE(family$spcf_estimate_theta)) {
+    for (it in 1:3) {
+      mu_init <- family$linkinv(.dglm_clip_l(drop(x %*% beta) + offset, family))
+      family  <- .spcf_nb_update(family, y, mu_init, idx = id_train)
+      beta    <- stats::glm.fit(x, y, offset = offset, family = family)$coefficients
+    }
+  }
   eta  <- drop(x %*% beta) + offset
   zw   <- .dglm_work(family, eta, y, offset)
   beta_c <- beta; if (has_tv) beta_c[tv_cols] <- 0   # keep tv covariate effect in the residual
@@ -273,11 +287,16 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
       ## refresh the working response/weights at the refit linearization so the
       ## next scale fits the updated working residual (field absorbed in offset).
       eta_f <- drop(xfc %*% b_const) + Of_try
+      ## negbin(): re-estimate theta on the fit observations after the accepted scale
+      if (isTRUE(family$spcf_estimate_theta))
+        family <- .spcf_nb_update(family, y[obs_f], family$linkinv(.dglm_clip_l(eta_f, family)))
       zwf <- .dglm_work(family, eta_f, y[obs_f], offf)
       Rfit[] <- NA_real_; Wfit[] <- NA_real_
       Rfit[cbind(fi_row, fi_col)] <- zwf$z - (eta_f - offf)   # = (y-mu)/mu' (field in offset)
       Wfit[cbind(fi_row, fi_col)] <- zwf$w
       best <- trial
+      ## re-base the holdout deviance at the updated theta (same-theta comparison next)
+      if (isTRUE(family$spcf_estimate_theta)) best <- dev_of(pred_val)
     } else { if (i > 10) count <- count + 1L; comment <- " no improvement" }
     Loss <- c(Loss, best); Loss_name <- c(Loss_name, paste0("scale ", i))
     message(paste0(formatC(best, digits = 7, format = "g"), " (Scale ", i, ")", comment))

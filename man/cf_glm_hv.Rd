@@ -46,7 +46,12 @@ more stringent but increase computation time.}
 the exponential kernel (default) and `"gau"` for the Gaussian kernel.}
 
 \item{family}{Error distribution and link function specification,
-consistent with the 'family' argument of \code{\link{glm}}.}
+consistent with the 'family' argument of \code{\link{glm}}.
+Negative binomial responses: \code{\link{negbin}()} estimates the
+dispersion \eqn{\theta} (re-estimated on the training samples after each
+accepted scale); \code{negbin(theta)} or \code{MASS::negative.binomial(theta)}
+keeps it fixed. \code{poisson(link = "identity")} is supported with the mean
+floored at a small positive value.}
 
 \item{seed}{Random seed used for the training/validation split when
 `id_train` is not supplied. Default is `1234`. Set to `NULL` to allow

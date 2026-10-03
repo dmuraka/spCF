@@ -24,6 +24,11 @@
 #'   the exponential kernel (default) and `"gau"` for the Gaussian kernel.
 #' @param family Error distribution and link function specification,
 #'   consistent with the 'family' argument of \code{\link{glm}}.
+#'   Negative binomial responses: \code{\link{negbin}()} estimates the
+#'   dispersion \eqn{\theta} (re-estimated on the training samples after each
+#'   accepted scale); \code{negbin(theta)} or \code{MASS::negative.binomial(theta)}
+#'   keeps it fixed. \code{poisson(link = "identity")} is supported with the mean
+#'   floored at a small positive value.
 #' @param seed Random seed used for the training/validation split when
 #'   `id_train` is not supplied. Default is `1234`. Set to `NULL` to allow
 #'   a different split at each call (useful for assessing split sensitivity).
@@ -52,10 +57,20 @@ cf_glm_hv  <- function(y, x=NULL, coords, offset=NULL, train_rat=0.75, id_train=
 
   n_obs          <- .spcf_check_data(y = y, x = x, coords = coords, offset = offset)
   .spcf_check_hv_args(n_obs, train_rat, id_train, alpha, kernel)
+  family         <- .spcf_prepare_family(family)
 
   init           <- initial_fun_glm(x=x,y=y,coords=coords,offset=offset,
                                     train_rat=train_rat,x_sel=NULL,family=family,
                                     id_train=id_train, seed=seed)
+  ## negbin(): estimate theta on the training samples at the initial GLM
+  if(isTRUE(family$spcf_estimate_theta)){
+    for(it in 1:3){
+      family     <- .spcf_nb_update(family, y, init$gmod$fitted.values, idx=init$id_train)
+      init       <- initial_fun_glm(x=x,y=y,coords=coords,offset=offset,
+                                    train_rat=train_rat,x_sel=NULL,family=family,
+                                    id_train=init$id_train, seed=seed)
+    }
+  }
   beta_int       <- init$beta_int
   beta           <- init$beta
   coords         <- init$coords
@@ -138,6 +153,13 @@ cf_glm_hv  <- function(y, x=NULL, coords, offset=NULL, train_rat=0.75, id_train=
       ## weights as glm(y ~ 0 + x + offset(l_pred_off)), without the formula
       ## model.frame/terms rebuild each band.
       gmod0           <- glm.fit(x, y, offset=l_pred_off, family=family)
+      ## negbin(): re-estimate theta on the training samples after each accepted
+      ## scale, refit, and re-base the validation loss at the new theta so the
+      ## next scale is judged against the current model under the same theta.
+      if(isTRUE(family$spcf_estimate_theta)){
+        family        <- .spcf_nb_update(family, y, gmod0$fitted.values, idx=id_train)
+        gmod0         <- glm.fit(x, y, offset=l_pred_off, family=family)
+      }
       resid           <- gmod0$residuals
       w               <- gmod0$weights
       beta_int_new    <- matrix(gmod0$coefficients)
@@ -147,6 +169,7 @@ cf_glm_hv  <- function(y, x=NULL, coords, offset=NULL, train_rat=0.75, id_train=
       beta_int        <- beta_int_new
       ## sum of squared deviance residuals == sum of per-obs deviance contribs
       loss_new        <- sum(family$dev.resids(y, gmod0$fitted.values, 1)[-id_train] )
+      if(isTRUE(family$spcf_estimate_theta)) sse_hv0 <- loss_new
       Loss            <- c(Loss ,loss_new)
 
       vc_sel          <- lmod$vc_sel

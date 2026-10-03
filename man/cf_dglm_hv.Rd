@@ -56,7 +56,12 @@ exponential kernel (default) and \code{"gau"} for the Gaussian kernel.}
 
 \item{family}{Error distribution and link function, consistent with the
 \code{family} argument of \code{\link{glm}}. Functionality has been
-confirmed for \code{gaussian()}, \code{poisson()}, and \code{binomial()}.}
+confirmed for \code{gaussian()}, \code{poisson()}, and \code{binomial()}.
+Negative binomial responses: \code{\link{negbin}()} estimates the
+dispersion \eqn{\theta} (re-estimated on the training samples after each
+accepted scale); \code{negbin(theta)} or \code{MASS::negative.binomial(theta)}
+keeps it fixed. \code{poisson(link = "identity")} is supported with the mean
+floored at a small positive value.}
 
 \item{rho, Q}{Optional AR(1) temporal parameters (autocorrelation and
 innovation variance). When \code{NULL} (default) a single global

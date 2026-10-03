@@ -401,8 +401,15 @@ lwr_glm        <- function(coords, coords_uni,resid, x, w=NULL, offset=NULL,
 ## s_f is passed on the link scale (sqrt of the capped field variance). eta and
 ## the IRLS weights W still include the fitted field so mu / mu.eta match the
 ## fitted model; only the additive field term is taken out of the residual.
+## noise_var (optional, Gaussian cf_lm): an estimate of the observation-noise
+## variance that does not depend on the fitted field. The field-removed training
+## residual r is shrunk by the fitted field (the cascade absorbs part of the
+## noise at the training points: the in-sample residual variance is roughly half
+## the noise variance at n = 500), so the noise meat B_noise is scaled by
+## max(1, noise_var / mean(W r^2)). cf_glm does not pass it (count families have
+## a model-based variance and the LOO ceiling below).
 .spcf_optfield_SE <- function(y, X, beta, field, s_f, offset, family, coords,
-                              bands, c_guard = 1.0) {
+                              bands, c_guard = 1.0, noise_var = NULL) {
   X <- as.matrix(X); beta <- as.numeric(beta)
   field <- as.numeric(field); s_f <- as.numeric(s_f)
   if (is.null(offset)) offset <- 0
@@ -426,6 +433,10 @@ lwr_glm        <- function(coords, coords_uni,resid, x, w=NULL, offset=NULL,
   Ai  <- solve(crossprod(X, W * X))
   S   <- rowsum(X * (W * r), blk)                       # noise meat
   Bnoise <- (G / (G - 1)) * crossprod(S)
+  if (!is.null(noise_var) && is.finite(noise_var) && noise_var > 0) {
+    rv <- mean(W * r^2)
+    if (is.finite(rv) && rv > 0) Bnoise <- Bnoise * max(1, noise_var / rv)
+  }
   U   <- X * (W * s_f)                                  # field meat (per point)
   Bfield <- matrix(0, ncol(X), ncol(X))
   for (lv in levels(blk)) {
@@ -455,4 +466,26 @@ lwr_glm        <- function(coords, coords_uni,resid, x, w=NULL, offset=NULL,
     Vof  <- Rc * outer(sdn, sdn)
   }
   list(V = Vof, G = G)
+}
+
+## Nugget (observation-noise variance) estimate that does not use the fitted
+## field: residuals of the fixed-effect-only least-squares fit, half squared
+## differences between each point and its k nearest neighbours, regressed on
+## distance over the nearer half of those pairs; the intercept (the variogram
+## extrapolated to distance 0) is the noise variance. Used by cf_lm to correct
+## the shrinkage of the in-sample residual in the coefficient SE.
+.spcf_nugget_nn <- function(y, X, coords, k = 10L) {
+  coords <- as.matrix(coords); X <- as.matrix(X); n <- length(y)
+  if (n < 20L) return(NULL)
+  e  <- tryCatch(as.numeric(stats::lm.fit(X, y)$residuals), error = function(err) NULL)
+  if (is.null(e)) return(NULL)
+  k  <- min(k, n - 1L)
+  nn <- FNN::get.knn(coords, k = k)
+  dd <- as.numeric(nn$nn.dist)
+  gg <- 0.5 * (e - e[as.numeric(nn$nn.index)])^2
+  q  <- is.finite(dd) & dd <= stats::quantile(dd, 0.5, na.rm = TRUE)
+  if (sum(q) < 10L) return(NULL)
+  a  <- tryCatch(stats::coef(stats::lm.fit(cbind(1, dd[q]), gg[q]))[1], error = function(err) NA)
+  if (!is.finite(a) || a <= 0) return(NULL)
+  as.numeric(a)
 }

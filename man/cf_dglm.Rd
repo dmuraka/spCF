@@ -74,8 +74,14 @@ leave the field variance uncapped.}
 \code{"prediction"} (default) returns the holdout-calibrated OBSERVATION
 predictive for a new data point (Gaussian: mean uncertainty + residual
 variance; Poisson: negative-binomial count predictive; binomial:
-temperature-calibrated probability with \code{pred_sd = sqrt(p(1-p))}); the
-signal versions are kept in \code{pred_signal}/\code{pred_q_signal}.
+temperature-calibrated probability with \code{pred_sd = sqrt(p(1-p))}).
+Negative binomial (\code{\link{negbin}}): negative-binomial count
+predictive with the fitted dispersion. Other families use a moment-matched
+observation predictive with the holdout-estimated dispersion (Gamma: gamma;
+inverse.gaussian: inverse Gaussian; quasipoisson: negative binomial;
+quasibinomial: beta for proportions, as binomial for 0/1 data; otherwise
+normal), with the mean-uncertainty scale calibrated to 95\% holdout coverage.
+The signal versions are kept in \code{pred_signal}/\code{pred_q_signal}.
 \code{"mean"} returns the signal (mean) uncertainty only (previous
 behaviour). See \code{other$calibration}.}
 

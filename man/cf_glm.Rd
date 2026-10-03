@@ -49,8 +49,14 @@ Set \code{FALSE} to use naive SEs (not recommended).}
 data point, holdout-calibrated on the \code{cf_glm_hv} validation samples
 (Gaussian: mean uncertainty + residual variance, split-conformal SD
 scaling; Poisson: negative-binomial count predictive; binomial: temperature
--calibrated probability with \code{pred_sd = sqrt(p(1-p))}). The mean/signal
-versions are kept in \code{pred_signal}/\code{pred_q_signal}.
+-calibrated probability with \code{pred_sd = sqrt(p(1-p))}).
+Negative binomial (\code{\link{negbin}}): negative-binomial count
+predictive with the fitted dispersion. Other families use a moment-matched
+observation predictive with the holdout-estimated dispersion (Gamma: gamma;
+inverse.gaussian: inverse Gaussian; quasipoisson: negative binomial;
+quasibinomial: beta for proportions, as binomial for 0/1 data; otherwise
+normal), with the mean-uncertainty scale calibrated to 95\% holdout coverage.
+The mean/signal versions are kept in \code{pred_signal}/\code{pred_q_signal}.
 \code{"mean"} returns the signal (mean) uncertainty only (previous
 behaviour). See \code{other$calibration} for the fitted calibration.}
 
