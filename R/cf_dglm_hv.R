@@ -258,6 +258,7 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
   }
   message("--- Validation deviance: Basic GLM ---")
   pred_val <- matrix(0, length(vi), nT); Vval <- matrix(0, length(vi), nT); committed <- numeric(0)
+  Vval_st <- list(); cap_st <- numeric(0)          # per-scale holdout variances and field variances (stage bound)
   cumF_fit <- matrix(0, length(fi), nT)            # cumulative committed field at fit obs (link)
   xfc <- x[obs_f, const_cols, drop = FALSE]; offf <- offset[obs_f]
   tvpf <- if (has_tv) tvp[obs_f] else rep(0, length(obs_f))
@@ -283,6 +284,8 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
     trial  <- sum(family$dev.resids(yv_obs, mu_v, 1), na.rm = TRUE)
     if (trial < best - 1e-8) {
       pred_val <- cumF_val_try; Vval <- Vval + sc$Vpr; cumF_fit <- cumF_fit_try
+      Vval_st[[length(Vval_st) + 1L]] <- sc$Vpr_d / sc$P0     # distance-aware variance as a fraction of the knot prior
+      cap_st <- c(cap_st, stats::var(sc$Ftr[cbind(fi_row, fi_col)]))
       b_const  <- b_try; committed <- c(committed, b); count <- 0L; comment <- ""
       ## refresh the working response/weights at the refit linearization so the
       ## next scale fits the updated working residual (field absorbed in offset).
@@ -358,6 +361,31 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
     tau  <- min(max(exp(log(tau_raw) * rel), 1e-2), 1e2)
   } else tau <- 1
   if (!is.finite(tau)) tau <- 1
+  ## Per-stage bound (internal_stage_var.R; cf_dglm(stage_bound = TRUE)): solve
+  ## the same moment equation with the calibrated field variance
+  ## sum_r min(tau * V_r, kappa s_r^2), the stage caps rescaled to sum to the
+  ## variance of the fitted total field. tau above (total variance) is kept for
+  ## stage_bound = FALSE. Not for binomial (its field variance is left uncapped).
+  tau_stage <- NA_real_
+  sill_hv <- max(stats::var(cumF_fit[cbind(fi_row, fi_col)]),
+                 .dglm_field_var_direct(y[obs_f], x[obs_f, , drop = FALSE], offset[obs_f], family,
+                                        coords[obs_f, , drop = FALSE], pn$tk[obs_f]), na.rm = TRUE)
+  okst <- !is.na(resid_val) & is.finite(Wval) & (Wval > 0)
+  if (length(Vval_st) && family$family != "binomial" && is.finite(sill_hv) && sill_hv > 0 && sum(okst) >= 2) {
+    caps <- cap_st; caps[!is.finite(caps)] <- 0
+    if (sum(caps) > 0) {
+      caps <- caps * sill_hv / sum(caps)
+      ## stage r's variance at a holdout cell: caps_r * tau r / (1 + r (tau - 1)) with
+      ## r = Vd_r / P0 (internal_stage_var.R), reaching caps_r where the data say nothing
+      P  <- do.call(cbind, lapply(Vval_st, function(V) { v <- V[okst]; v[!is.finite(v)] <- 1; pmin(pmax(v, 0), 1) }))
+      Ws <- Wval[okst]
+      vs <- sum(Ws * resid_val[okst]^2) / sum(Ws); ns <- vs - sig2
+      ses <- sqrt(2 / sum(okst)) * vs
+      rels <- if (ns > 0 && is.finite(ses) && ses > 0) ns^2 / (ns^2 + ses^2) else 0
+      tau_stage <- min(max(exp(log(.spcf_stage_tau_raw_ratio(P, caps, ns, Ws)) * rels), 1e-2), 1e2)
+      if (!is.finite(tau_stage)) tau_stage <- NA_real_
+    }
+  }
 
   ## ---- genuine out-of-sample validation metrics: the selected model is trained
   ## on the training locations only and evaluated at the held-out (validation)
@@ -384,7 +412,7 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
                 kernel = kernel, family = family, rho = rho, Q = Q,
                 sigma = sqrt(max(sig2, 0)),            # data-noise SD (link/working scale)
                 x_sel = x_sel, xname = xname, seed = seed,
-                time_levels = lev, tau = tau, tv_cols = tv_cols, q_tvc = q_tvc)
+                time_levels = lev, tau = tau, tau_stage = tau_stage, tv_cols = tv_cols, q_tvc = q_tvc)
   result <- list(loss_hv = loss_hv, loss_hv_all = loss_hv_all, e_summary = e_summary,
                  val_pred = val_pred, id_train = id_train, other = other, call = match.call())
   class(result) <- "cf_dglm_hv"

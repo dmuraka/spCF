@@ -36,3 +36,28 @@
   if(num >= top) return(100)
   exp(stats::uniroot(function(lt) g(exp(lt)) - num, c(log(1e-10), log(1e10)), tol = 1e-8)$root)
 }
+
+## ---- cf_dglm: stage variance from a posterior/prior ratio (information scaling) ----
+## For cf_dglm the per-scale variance is supplied as r = Vd / P0v in [0, 1] (the
+## fraction of the scale's prior variance left after the data; dglm_chunk.cpp).
+## The holdout factor tau scales the information the data carry rather than the
+## variance: with prior variance c_r (the stage cap, caps summing to the sill) and
+## data precision (1/r - 1)/c_r, scaling the data precision by 1/tau gives
+##   var_r = c_r * tau r / (1 + r (tau - 1)),
+## which is ~ c_r tau r near the data and equals c_r where the data say nothing
+## (r = 1), whatever tau. (A variance multiplier min(tau r, 1) c_r would leave the
+## level far from the data at tau c_r, below the sill when tau < 1.)
+.spcf_stage_var_ratio <- function(R, caps, tau){
+  if(is.null(R)) return(NULL)
+  if(!ncol(R)) return(matrix(0, nrow(R), 0L))
+  r <- pmin(pmax(R, 0), 1)
+  sweep(tau * r / (1 + r * (tau - 1)), 2, caps, `*`)
+}
+.spcf_stage_tau_raw_ratio <- function(R, caps, num, w = rep(1, nrow(R))){
+  g   <- function(t) sum(w * rowSums(.spcf_stage_var_ratio(R, caps, t))) / sum(w)
+  top <- g(1e10)
+  if(!ncol(R) || top <= 0) return(1)
+  if(!is.finite(num) || num <= 0) return(1e-6)
+  if(num >= top) return(100)
+  exp(stats::uniroot(function(lt) g(exp(lt)) - num, c(log(1e-10), log(1e10)), tol = 1e-8)$root)
+}

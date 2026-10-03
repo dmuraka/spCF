@@ -17,6 +17,7 @@ cf_dglm(
   mod_hv,
   robust_se = TRUE,
   sill_cap = TRUE,
+  stage_bound = TRUE,
   se_type = c("prediction", "mean"),
   se_method = c("opt", "classic")
 )
@@ -69,6 +70,26 @@ cap is applied to the total field variance (never per scale) and leaves the
 predictive mean, RMSE, and the coefficient-uncertainty term unchanged. It is
 disabled automatically for \code{binomial} responses. Set \code{FALSE} to
 leave the field variance uncapped.}
+
+\item{stage_bound}{Logical; if \code{TRUE} (default), the field variance of
+the mean is assembled scale by scale so that it grows smoothly with the
+distance to the data and reaches the marginal field variance far from it.
+For scale \eqn{r}, \eqn{r_r = V^d_r / P_{0,r}} is the fraction of the scale's
+prior variance left after the data, from a distance-aware gPoE variance
+(each knot informs a site through its kernel correlation \eqn{w}, conditional
+variance \eqn{w^2 P + (1 - w^2) P_0}); the calibrated variance is
+\eqn{c_r \tau r_r / (1 + r_r(\tau - 1))}, where the caps \eqn{c_r} are
+proportional to the variance of each fitted scale and sum to the sill, and
+\eqn{\tau} (\code{mod_hv$other$tau_stage}) scales the information of the data
+and is solved from the holdout moment equation in \code{\link{cf_dglm_hv}}.
+The sill is floored at a direct estimate of the field variance (working
+residual variance of the GLM minus a nearest-neighbour nugget), and when no
+scale is accepted that estimate is added as unmodeled field variance. This
+removes the jump of the variance to the sill at the edge of a fine scale's
+support and keeps the mean intervals from collapsing when the field is
+underfitted. Point predictions and coefficient estimates are unchanged.
+Not used for \code{binomial} or with \code{sill_cap = FALSE}; \code{FALSE}
+restores the total-variance cap of spCF <= 0.2.1.}
 
 \item{se_type}{Type of predictive uncertainty in \code{pred}/\code{pred_q}.
 \code{"prediction"} (default) returns the holdout-calibrated OBSERVATION

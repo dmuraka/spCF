@@ -53,6 +53,25 @@
 #'   predictive mean, RMSE, and the coefficient-uncertainty term unchanged. It is
 #'   disabled automatically for \code{binomial} responses. Set \code{FALSE} to
 #'   leave the field variance uncapped.
+#' @param stage_bound Logical; if \code{TRUE} (default), the field variance of
+#'   the mean is assembled scale by scale so that it grows smoothly with the
+#'   distance to the data and reaches the marginal field variance far from it.
+#'   For scale \eqn{r}, \eqn{r_r = V^d_r / P_{0,r}} is the fraction of the scale's
+#'   prior variance left after the data, from a distance-aware gPoE variance
+#'   (each knot informs a site through its kernel correlation \eqn{w}, conditional
+#'   variance \eqn{w^2 P + (1 - w^2) P_0}); the calibrated variance is
+#'   \eqn{c_r \tau r_r / (1 + r_r(\tau - 1))}, where the caps \eqn{c_r} are
+#'   proportional to the variance of each fitted scale and sum to the sill, and
+#'   \eqn{\tau} (\code{mod_hv$other$tau_stage}) scales the information of the data
+#'   and is solved from the holdout moment equation in \code{\link{cf_dglm_hv}}.
+#'   The sill is floored at a direct estimate of the field variance (working
+#'   residual variance of the GLM minus a nearest-neighbour nugget), and when no
+#'   scale is accepted that estimate is added as unmodeled field variance. This
+#'   removes the jump of the variance to the sill at the edge of a fine scale's
+#'   support and keeps the mean intervals from collapsing when the field is
+#'   underfitted. Point predictions and coefficient estimates are unchanged.
+#'   Not used for \code{binomial} or with \code{sill_cap = FALSE}; \code{FALSE}
+#'   restores the total-variance cap of spCF <= 0.2.1.
 #' @param se_type Type of predictive uncertainty in \code{pred}/\code{pred_q}.
 #'   \code{"prediction"} (default) returns the holdout-calibrated OBSERVATION
 #'   predictive for a new data point (Gaussian: mean uncertainty + residual
@@ -148,7 +167,7 @@
 #' @export
 cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
                     x0 = NULL, coords0 = NULL, time0 = NULL, offset0 = NULL,
-                    mod_hv, robust_se = TRUE, sill_cap = TRUE,
+                    mod_hv, robust_se = TRUE, sill_cap = TRUE, stage_bound = TRUE,
                     se_type = c("prediction", "mean"),
                     se_method = c("opt", "classic")) {
   se_method <- match.arg(se_method)
@@ -169,6 +188,7 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
   lev    <- mod_hv$other$time_levels
   sk     <- ifelse(is.null(mod_hv$other$seed), 4321, mod_hv$other$seed)
   tau    <- mod_hv$other$tau; if (is.null(tau) || !is.finite(tau) || tau <= 0) tau <- 1
+  tau_stage <- mod_hv$other$tau_stage       # per-stage bound (NULL for fits from spCF <= 0.2.1)
   tv_cols <- mod_hv$other$tv_cols           # design-column indices (in X) with time-varying coefficient
   if (is.null(tv_cols)) tv_cols <- integer(0)
   q_tvc  <- mod_hv$other$q_tvc              # drift variance for the time-varying coefficients
@@ -281,6 +301,7 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
 
   Z <- Z_sd <- matrix(0, n, max(length(bands), 1L))
   Z0 <- Z0_sd <- if (has0) matrix(0, n0, max(length(bands), 1L)) else NULL
+  Rd <- matrix(1, n, max(length(bands), 1L)); Rd0 <- if (has0) matrix(1, n0, max(length(bands), 1L)) else NULL   # Vd / P0 per scale
   f_tr <- rep(0, n); f0_obs <- if (has0) rep(0, n0) else NULL
   tvpart <- tvpart_of(tvbeta); z <- w <- NULL
   if (length(bands) == 0) {
@@ -293,9 +314,11 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
     for (k in seq_along(bands)) {
       Z[, k]    <- sw$scales[[k]]$Ftr[cbind(pn$lk, pn$tk)]
       Z_sd[, k] <- sqrt(sw$scales[[k]]$Vtr[cbind(pn$lk, pn$tk)])
+      Rd[, k]   <- sw$scales[[k]]$Vtr_d[cbind(pn$lk, pn$tk)] / sw$scales[[k]]$P0
       if (has0) {
         Z0[, k]    <- sw$scales[[k]]$Fpr[cbind(pn0$lk, pn0$tk)]
         Z0_sd[, k] <- sqrt(sw$scales[[k]]$Vpr[cbind(pn0$lk, pn0$tk)])
+        Rd0[, k]   <- sw$scales[[k]]$Vpr_d[cbind(pn0$lk, pn0$tk)] / sw$scales[[k]]$P0
       }
     }
     ## center each scale to zero mean (folding the bias into the intercept via
@@ -361,11 +384,40 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
   sill <- if (isTRUE(sill_cap) && family$family != "binomial" && length(bands) > 0) {
     sv <- stats::var(rowSums(Z)); if (is.finite(sv) && sv > 0) sv else Inf
   } else Inf
+  ## Per-stage bound (default; internal_stage_var.R): the calibrated variance of
+  ## scale r is c_r tau r / (1 + r (tau - 1)), r = Vd_r / P0, c_r = kappa s_r^2 (the caps summing to
+  ## the sill, with Vd the distance-aware gPoE variance (dglm_chunk.cpp) that grows
+  ## from the knot posterior near the data to the knot prior P0 at the edge of the
+  ## kernel support. The field variance thus grows smoothly away from the data and
+  ## reaches the sill far from it, instead of jumping to the sill (via the
+  ## fallback value 1 of the plain gPoE variance) at the edge of a fine scale.
+  ## Requires a finite sill (not binomial, sill_cap = TRUE) and a cf_dglm_hv fit
+  ## that stored tau_stage; otherwise the total tau-scaled variance capped at the
+  ## sill is used (stage_bound = FALSE, spCF <= 0.2.1).
+  stage_on <- isTRUE(stage_bound) && is.finite(sill) && length(bands) > 0 &&
+              !is.null(tau_stage) && is.finite(tau_stage)
+  ## the sill of the bound is floored at a direct estimate of the field variance
+  ## (internal_utils_dglm.R), so that an underfitted field does not cap the
+  ## variance below the actual error
+  sill_st <- if (stage_on) max(sill, .dglm_field_var_direct(y, X, offset, family, coords, pn$tk), na.rm = TRUE) else sill
+  caps <- if (stage_on) .spcf_stage_caps(Z, sill_st) else NULL
+  ## stage r's variance = caps_r * tau r / (1 + r (tau - 1)), r = Vd_r / P0
+  ## (information scaling, internal_stage_var.R)
+  ## no scale accepted: the field is not modeled at all, and its variance (direct
+  ## estimate) is unmodeled error at every site; add it as a constant so the mean
+  ## intervals reflect it (the predictions are those of the GLM either way)
+  v_unmod <- if (isTRUE(stage_bound) && length(bands) == 0 && isTRUE(sill_cap) &&
+                 family$family != "binomial") {
+    vd <- .dglm_field_var_direct(y, X, offset, family, coords, pn$tk); if (is.finite(vd)) vd else 0
+  } else 0
+  field_var_cal <- function(S, R) if (stage_on) rowSums(.spcf_stage_var_ratio(R, caps, tau_stage))
+                                  else if (v_unmod > 0) rep(v_unmod, nrow(S))
+                                  else pmin(tau * rowSums(S^2), sill)
   ## opt+field coefficient covariance (default se_method): recomputed once the
   ## calibrated per-point field SD s_f = sqrt(pmin(tau*rowSums(Z_sd^2), sill)) is
   ## available, replacing the classic field-retained cluster-robust covariance.
   if (robust_se && se_method == "opt" && length(bands) > 0) {
-    s_f <- sqrt(pmax(pmin(tau * rowSums(Z_sd^2), sill), 0))
+    s_f <- sqrt(pmax(field_var_cal(Z_sd, Rd), 0))
     ofse <- tryCatch(.dglm_optfield_SE(y, Xg, beta_int, f_tr, s_f, tvpart, offset,
                                        family, coords, mod_hv$other$bands),
                      error = function(e) NULL)
@@ -381,7 +433,7 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
   pred     <- predict(gmod, type = "response")
   pred_lin <- predict(gmod, type = "link")
   pred_lin_sd <- sqrt(pmax(rowSums((Xg %*% Vbeta) * Xg) + tvvar(Xtv, pn$tk) +
-                           pmin(tau * rowSums(Z_sd^2), sill), 0))
+                           field_var_cal(Z_sd, Rd), 0))
   pred_sd  <- abs(family$mu.eta(pred_lin)) * pred_lin_sd
   qs <- c(0.005, 0.025, 0.05, seq(0.1, 0.9, 0.1), 0.95, 0.975, 0.995)
   pred_q <- data.frame(family$linkinv(pred_lin + outer(pred_lin_sd, qnorm(qs), "*")))
@@ -399,7 +451,7 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
     pred0_lin <- predict(gmod, newdata = dat0, type = "link")
     Xg0 <- if (ncv > 0) cbind(1, X0[, const_cov, drop = FALSE]) else matrix(1, n0, 1)
     pred0_lin_sd <- sqrt(pmax(rowSums((Xg0 %*% Vbeta) * Xg0) + tvvar(X0tv, pn0$tk) +
-                              pmin(tau * rowSums(Z0_sd^2), sill), 0))
+                              field_var_cal(Z0_sd, Rd0), 0))
     pred0_sd  <- abs(family$mu.eta(pred0_lin)) * pred0_lin_sd
     pred0_q <- data.frame(family$linkinv(pred0_lin + outer(pred0_lin_sd, qnorm(qs), "*")))
     names(pred0_q) <- paste0("q", qs)
@@ -456,7 +508,8 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
   other <- list(n = n, n0 = if (has0) n0 else NA, nx = nx, y = y,
                 coords = coords, coords0 = coords0, rho = rho, Q = Q,
                 kernel = kernel, beta_int_vmat = Vbeta, loss_hv = mod_hv$loss_hv,
-                tau = tau, tv_cols = tv_cols, q_tvc = q_tvc,
+                tau = tau, tau_stage = if (stage_on) tau_stage else NA_real_, stage_bound = stage_on,
+                tv_cols = tv_cols, q_tvc = q_tvc,
                 time = time, time0 = if (has0) time0 else NULL,
                 x = x, x0 = if (has0) x0 else NULL,
                 time_levels = lev_work, time_levels_train = lev,

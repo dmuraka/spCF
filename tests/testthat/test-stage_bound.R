@@ -46,3 +46,33 @@ test_that("cf_glm uses the bound for poisson and ignores it for binomial", {
   b0 <- quiet(cf_glm(y = yb, coords = cs, coords0 = far, mod_hv = hb, stage_bound = FALSE))
   expect_identical(b1$pred0, b0$pred0)
 })
+
+## ---- cf_dglm ----
+st <- sim_spacetime(ns = 60, nt = 4, seed = 9)
+hvd <- quiet(cf_dglm_hv(y = st$y, x = st$x, coords = st$coords, time = st$time))
+far_st <- data.frame(px = c(0.5, 1.5, 3), py = c(0.5, 1.5, 3))
+
+test_that("cf_dglm stage_bound keeps the point predictions and gives finite variances", {
+  a <- quiet(cf_dglm(y = st$y, x = st$x, coords = st$coords, time = st$time,
+                     x0 = st$x[1:3, , drop = FALSE], coords0 = far_st, time0 = rep(st$nt, 3),
+                     mod_hv = hvd, se_type = "mean"))
+  b <- quiet(cf_dglm(y = st$y, x = st$x, coords = st$coords, time = st$time,
+                     x0 = st$x[1:3, , drop = FALSE], coords0 = far_st, time0 = rep(st$nt, 3),
+                     mod_hv = hvd, se_type = "mean", stage_bound = FALSE))
+  expect_equal(a$pred0$pred, b$pred0$pred)
+  expect_true(all(is.finite(a$pred0$pred_sd) & a$pred0$pred_sd > 0))
+  expect_true(is.finite(hvd$other$tau_stage) || length(hvd$other$bands) == 0)
+})
+
+test_that("cf_dglm adds the unmodeled field variance when no scale is accepted", {
+  set.seed(3); ns <- 40; nt <- 3; cs <- data.frame(px = runif(ns), py = runif(ns))
+  y <- rnorm(ns * nt) + rep(sin(6 * cs$px), nt)
+  co <- cs[rep(seq_len(ns), nt), ]; tt <- rep(seq_len(nt), each = ns)
+  h0 <- quiet(cf_dglm_hv(y = y, coords = co, time = tt)); h0$other$bands <- numeric(0)
+  m1 <- quiet(cf_dglm(y = y, coords = co, time = tt, coords0 = cs[1:5, ], time0 = rep(nt, 5),
+                      mod_hv = h0, se_type = "mean"))
+  m0 <- quiet(cf_dglm(y = y, coords = co, time = tt, coords0 = cs[1:5, ], time0 = rep(nt, 5),
+                      mod_hv = h0, se_type = "mean", stage_bound = FALSE))
+  expect_equal(m1$pred0$pred, m0$pred0$pred)
+  expect_true(all(m1$pred0$pred_sd >= m0$pred0$pred_sd))
+})
