@@ -19,6 +19,18 @@
 #'   and predictive uncertainty are computed using a cluster-robust sandwich
 #'   estimator accounting for local spatial correlation.
 #'   Set \code{FALSE} to use naive SEs (not recommended).
+#' @param stage_bound If \code{TRUE} (default), the spatial-process predictive
+#'   variance is bounded stage by stage: the calibrated variance of stage \eqn{r}
+#'   is \eqn{\min(\tau\, pv_r, \kappa s_r^2)}, where \eqn{pv_r} is the stage's
+#'   predictive variance (infinite where no knot with data reaches the site),
+#'   \eqn{s_r^2} the variance of the stage's fitted field over the sample sites,
+#'   and \eqn{\kappa} rescales the caps to sum to the marginal field variance.
+#'   The holdout factor \eqn{\tau} solves the corresponding moment equation.
+#'   The predictive SD then grows smoothly with the distance to the data and
+#'   reaches the marginal field variance far from it. \code{FALSE} restores the
+#'   total \eqn{\tau}-scaled variance capped at the marginal field variance
+#'   (spCF <= 0.2.1), which leaves rings around isolated sites. Point
+#'   predictions and coefficient estimates do not depend on this argument.
 #' @param se_method Cluster-robust coefficient-SE estimator (used when
 #'   \code{robust_se = TRUE}). \code{"opt"} (default) splits the sandwich
 #'   meat into a field-removed observation-noise part and a field part that adds
@@ -144,7 +156,7 @@
 #' @export
 cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
                          robust_se=TRUE, se_type=c("prediction","mean"),
-                         se_method=c("opt","classic")){
+                         se_method=c("opt","classic"), stage_bound=TRUE){
   se_type      <- match.arg(se_type)
   se_method    <- match.arg(se_method)
 
@@ -234,7 +246,7 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
         beta_add_m   <- colMeans(beta_add)
         Z[,ii]        <- beta_add[,1]-beta_add_m[1]#sweep(beta_add, 2, beta_add_m, "-")
         Z_sd[,ii]     <- sqrt(beta_v_add[,1])
-        bpv           <- lmod$beta_pv[,1]; bpv[!is.finite(bpv)] <- 0
+        bpv           <- lmod$beta_pv[,1]; bpv[!is.finite(bpv)] <- if(stage_bound) Inf else 0
         Z_pv[,ii]     <- sqrt(bpv)
         beta_int     <- beta_int + beta_int_add + beta_add_m
         if(!is.null(coords0)){
@@ -248,7 +260,7 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
 
           Z0[,ii]       <- beta0_add[,1]-beta_add_m[1]#sweep(beta0_add, 2, beta_add_m, "-")
           Z0_sd[,ii]    <- sqrt(beta0_v_add[,1])
-          b0pv          <- lmod$beta0_pv[,1]; b0pv[!is.finite(b0pv)] <- 0
+          b0pv          <- lmod$beta0_pv[,1]; b0pv[!is.finite(b0pv)] <- if(stage_bound) Inf else 0
           Z0_pv[,ii]    <- sqrt(b0pv)
         }
         comment         <- ""
@@ -342,6 +354,10 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
   ## far too low. The total-field marginal variance is the correct ceiling.
   sill           <- as.numeric(var(rowSums(Z)))          # marginal field variance ceiling
   if(!is.finite(sill) || sill <= 0) sill <- Inf
+  ## The per-scale cap fails when each scale is capped by its own var(Z[,k]);
+  ## the default per-stage bound rescales the caps to sum to the sill and applies
+  ## tau before the cap (internal_stage_var.R).
+  caps           <- if(stage_bound) .spcf_stage_caps(Z, sill) else NULL
   qlev_out       <- c(0.005, 0.025, 0.05, seq(0.1, 0.9, 0.1), 0.95, 0.975, 0.995)
   qn_hi          <- qnorm(qlev_out[length(qlev_out)])
   if(!is.null(coords0)){
@@ -362,30 +378,45 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
     sig2         <- mean((y[idt] - pred[idt])^2)            # in-sample noise floor
     e2           <- (y[val] - ph[val])^2                    # holdout squared error
     fv           <- field_var[val]
-    okv          <- is.finite(e2) & is.finite(fv) & fv > 0
+    okv          <- is.finite(e2) & (stage_bound | (is.finite(fv) & fv > 0))
     if(sum(okv) >= 2){
       verr       <- mean(e2[okv]); vfld <- mean(fv[okv])
       num        <- verr - sig2
       se         <- sqrt(2 / sum(okv)) * verr
       rel        <- if(num > 0 && is.finite(se) && se > 0) num^2 / (num^2 + se^2) else 0
-      tau_raw    <- if(vfld > 0) max(num, 1e-6) / vfld else 1
+      tau_raw    <- if(stage_bound) .spcf_stage_tau_raw(Z_pv[val, , drop=FALSE][okv, , drop=FALSE], caps, num)
+                    else if(vfld > 0) max(num, 1e-6) / vfld else 1
       tau        <- min(max(exp(log(tau_raw) * rel), 1e-2), 1e2)
       if(!is.finite(tau)) tau <- 1
     }
   }
-  ## calibrated, sill-capped spatial-process predictive variance (total ceiling)
-  fv_cal         <- pmin(tau * field_var, sill)
-  fv0_cal        <- if(!is.null(coords0)) pmin(tau * field_var0, sill) else NULL
+  ## calibrated spatial-process predictive variance: per-stage bound (default,
+  ## internal_stage_var.R; the stage caps sum to the sill) or the total
+  ## tau-scaled variance capped at the sill (stage_bound = FALSE)
+  if(stage_bound){
+    Vst          <- .spcf_stage_var(Z_pv, caps, tau)
+    fv_cal       <- rowSums(Vst)
+    Vst0         <- if(!is.null(coords0)) .spcf_stage_var(Z0_pv, caps, tau) else NULL
+    fv0_cal      <- if(!is.null(coords0)) rowSums(Vst0) else NULL
+  } else {
+    fv_cal       <- pmin(tau * field_var, sill)
+    fv0_cal      <- if(!is.null(coords0)) pmin(tau * field_var0, sill) else NULL
+  }
 
   ## Reported per-scale Z_sd / Z0_sd (used by sp_scalewise) are the pv per-scale
   ## variances scaled proportionally so rowSums(Z_sd^2) == fv_cal, sharing the
   ## same pv/tau/sill footing as pred_sd. The bv-based Z_sd used earlier for the
   ## GLS coefficient covariance is untouched.
-  sf_pt          <- sqrt(ifelse(field_var > 0, fv_cal / field_var, 1))
-  Z_sd           <- Z_pv * sf_pt
-  if(!is.null(coords0)){
-    sf0_pt       <- sqrt(ifelse(field_var0 > 0, fv0_cal / field_var0, 1))
-    Z0_sd        <- Z0_pv * sf0_pt
+  if(stage_bound){
+    Z_sd         <- sqrt(Vst)
+    if(!is.null(coords0)) Z0_sd <- sqrt(Vst0)
+  } else {
+    sf_pt        <- sqrt(ifelse(field_var > 0, fv_cal / field_var, 1))
+    Z_sd         <- Z_pv * sf_pt
+    if(!is.null(coords0)){
+      sf0_pt     <- sqrt(ifelse(field_var0 > 0, fv0_cal / field_var0, 1))
+      Z0_sd      <- Z0_pv * sf0_pt
+    }
   }
 
   ## opt+field coefficient covariance (default se_method): recomputed here, once

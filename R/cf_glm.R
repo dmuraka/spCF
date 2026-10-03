@@ -33,6 +33,13 @@
 #'   The mean/signal versions are kept in \code{pred_signal}/\code{pred_q_signal}.
 #'   \code{"mean"} returns the signal (mean) uncertainty only (previous
 #'   behaviour). See \code{other$calibration} for the fitted calibration.
+#' @param stage_bound If \code{TRUE} (default), the link-scale
+#'   spatial-process predictive variance is bounded stage by stage as in
+#'   \code{\link{cf_lm}}: \eqn{\min(\tau\, pv_r, \kappa s_r^2)} with the stage
+#'   caps rescaled to sum to the marginal field variance, and the holdout factor
+#'   \eqn{\tau} solving the working-weighted moment equation. Ignored for the
+#'   binomial family, whose field variance is left uncapped. \code{FALSE}
+#'   restores the behaviour of spCF <= 0.2.1.
 #' @param se_method Cluster-robust coefficient-SE estimator (used when
 #'   \code{robust_se = TRUE}). \code{"opt"} (default) splits the sandwich
 #'   meat into a field-removed observation-noise part and a field part that adds
@@ -182,7 +189,7 @@
 cf_glm          <- function(y, x=NULL, coords, offset=NULL,
                             x0=NULL, coords0=NULL, offset0=NULL, mod_hv,
                             robust_se=TRUE, se_type=c("prediction","mean"),
-                            se_method=c("opt","classic")){
+                            se_method=c("opt","classic"), stage_bound=TRUE){
   se_type        <- match.arg(se_type)
   se_method      <- match.arg(se_method)
 
@@ -191,6 +198,7 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
   .spcf_check_newdata(x = x, x0 = x0, coords0 = coords0, offset0 = offset0)
 
   family         <- .spcf_prepare_family(mod_hv$other$family)
+  stage_on       <- isTRUE(stage_bound) && !identical(family$family, "binomial")
   bands          <- mod_hv$other$bands
   bands_all      <- mod_hv$other$bands_all
   coords_uni     <- mod_hv$other$coords_uni
@@ -292,7 +300,7 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
         ii          <- which(bands_scale==i)
         Z[,ii]      <- beta_add[,1]
         Z_sd[,ii]   <- sqrt(beta_v_add[,1])
-        bpv         <- lmod$beta_pv[,1]; bpv[!is.finite(bpv)] <- 0
+        bpv         <- lmod$beta_pv[,1]; bpv[!is.finite(bpv)] <- if(stage_on) Inf else 0
         Z_pv[,ii]   <- sqrt(bpv)
 
         l_pred_off  <- .spcf_clip_l(l_pred, family) + offset
@@ -322,7 +330,7 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
 
           Z0[,ii]       <- beta0_add[,1]
           Z0_sd[,ii]    <- sqrt(beta0_v_add[,1])
-          b0pv          <- lmod$beta0_pv[,1]; b0pv[!is.finite(b0pv)] <- 0
+          b0pv          <- lmod$beta0_pv[,1]; b0pv[!is.finite(b0pv)] <- if(stage_on) Inf else 0
           Z0_pv[,ii]    <- sqrt(b0pv)
         }
         comment         <- ""
@@ -428,6 +436,9 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
   ## so the cap binds too early and suppresses growth. Disable it for binomial
   ## (the response is already bounded in [0, 1]).
   if(identical(family$family, "binomial")) sill <- Inf
+  ## per-stage bound (internal_stage_var.R); not for binomial, whose field is
+  ## left uncapped by design
+  caps         <- if(stage_on) .spcf_stage_caps(Z, sill) else NULL
   tau          <- 1
   idt          <- mod_hv$id_train
   if(!is.null(idt) && length(idt) < n && !is.null(mod_hv$other$pred)){
@@ -448,7 +459,7 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
     r_h        <- (y - mu_h) / ifelse(abs(me_h) < 1e-8, 1e-8, me_h)
     w_h        <- me_h^2 / v_h
     okv        <- (seq_len(n) %in% val) & is.finite(r_h) & is.finite(w_h) & w_h > 0 &
-                  is.finite(field_var) & field_var > 0
+                  (stage_on | (is.finite(field_var) & field_var > 0))
     if(sum(okv) >= 2){
       Wv       <- w_h[okv]
       verr     <- sum(Wv * r_h[okv]^2) / sum(Wv)
@@ -456,7 +467,8 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
       num      <- verr - sig2
       se       <- sqrt(2 / sum(okv)) * verr
       rel      <- if(num > 0 && is.finite(se) && se > 0) num^2 / (num^2 + se^2) else 0
-      tau_raw  <- if(vfld > 0) max(num, 1e-6) / vfld else 1
+      tau_raw  <- if(stage_on) .spcf_stage_tau_raw(Z_pv[okv, , drop=FALSE], caps, num, Wv)
+                  else if(vfld > 0) max(num, 1e-6) / vfld else 1
       tau      <- min(max(exp(log(tau_raw) * rel), 1e-2), 1e2)
       if(!is.finite(tau)) tau <- 1
     }
@@ -465,8 +477,14 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
   ## Report per-scale spatial SD (Z_sd / Z0_sd, used by sp_scalewise) on the same
   ## pv/tau/sill footing as pred_lin_sd, so they grow away from data and saturate
   ## at the sill (rowSums(Z_sd^2) == calibrated field variance, link scale).
-  fv_cal       <- pmin(tau * field_var, sill)
-  Z_sd         <- Z_pv * sqrt(ifelse(field_var > 0, fv_cal / field_var, 1))
+  if(stage_on){
+    Vst        <- .spcf_stage_var(Z_pv, caps, tau)
+    fv_cal     <- rowSums(Vst)
+    Z_sd       <- sqrt(Vst)
+  } else {
+    fv_cal     <- pmin(tau * field_var, sill)
+    Z_sd       <- Z_pv * sqrt(ifelse(field_var > 0, fv_cal / field_var, 1))
+  }
 
   ## opt+field coefficient covariance (default se_method): recomputed here, once
   ## the calibrated per-point field SD s_f = sqrt(fv_cal) is available, replacing
@@ -497,8 +515,14 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
   if(!is.null(coords0)){
     pred0_lin   <- predict(gmod,type="link",newdata=gmod0_dat)
     field_var0  <- rowSums(Z0_pv^2)
-    fv0_cal     <- pmin(tau * field_var0, sill)
-    Z0_sd       <- Z0_pv * sqrt(ifelse(field_var0 > 0, fv0_cal / field_var0, 1))
+    if(stage_on){
+      Vst0      <- .spcf_stage_var(Z0_pv, caps, tau)
+      fv0_cal   <- rowSums(Vst0)
+      Z0_sd     <- sqrt(Vst0)
+    } else {
+      fv0_cal   <- pmin(tau * field_var0, sill)
+      Z0_sd     <- Z0_pv * sqrt(ifelse(field_var0 > 0, fv0_cal / field_var0, 1))
+    }
     pred0_lin_sd<- sqrt( rowSums((x0 %*% beta_int_vmat)* x0) + fv0_cal)
     pred0_sd    <- response_se(pred_lin=pred0_lin, pred_lin_sd=pred0_lin_sd, family=family)
 

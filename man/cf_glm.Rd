@@ -15,7 +15,8 @@ cf_glm(
   mod_hv,
   robust_se = TRUE,
   se_type = c("prediction", "mean"),
-  se_method = c("opt", "classic")
+  se_method = c("opt", "classic"),
+  stage_bound = TRUE
 )
 }
 \arguments{
@@ -67,6 +68,14 @@ the calibrated field variance back with a within-block \code{exp(-d/h)}
 correlation (\code{h} = median committed bandwidth); this is near-nominal. A refit-free leverage leave-one-out ceiling then caps the field term, preventing over-coverage for count (Poisson) responses while leaving already-calibrated families unchanged.
 \code{"classic"} keeps the realised field inside the working residual (the
 previous behaviour), which is valid but conservative.}
+
+\item{stage_bound}{If \code{TRUE} (default), the link-scale
+spatial-process predictive variance is bounded stage by stage as in
+\code{\link{cf_lm}}: \eqn{\min(\tau\, pv_r, \kappa s_r^2)} with the stage
+caps rescaled to sum to the marginal field variance, and the holdout factor
+\eqn{\tau} solving the working-weighted moment equation. Ignored for the
+binomial family, whose field variance is left uncapped. \code{FALSE}
+restores the behaviour of spCF <= 0.2.1.}
 }
 \value{
 A list with the following elements:

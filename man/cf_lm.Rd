@@ -13,7 +13,8 @@ cf_lm(
   mod_hv,
   robust_se = TRUE,
   se_type = c("prediction", "mean"),
-  se_method = c("opt", "classic")
+  se_method = c("opt", "classic"),
+  stage_bound = TRUE
 )
 }
 \arguments{
@@ -52,6 +53,19 @@ variance) estimated from nearest-neighbour differences of the fixed-effect
 residuals, because the in-sample residual is shrunk by the fitted field. A refit-free leverage leave-one-out ceiling then caps the field term, preventing over-coverage for count (Poisson) responses while leaving already-calibrated families unchanged.
 \code{"classic"} keeps the realised field inside the working residual (the
 previous behaviour), which is valid but conservative.}
+
+\item{stage_bound}{If \code{TRUE} (default), the spatial-process predictive
+variance is bounded stage by stage: the calibrated variance of stage \eqn{r}
+is \eqn{\min(\tau\, pv_r, \kappa s_r^2)}, where \eqn{pv_r} is the stage's
+predictive variance (infinite where no knot with data reaches the site),
+\eqn{s_r^2} the variance of the stage's fitted field over the sample sites,
+and \eqn{\kappa} rescales the caps to sum to the marginal field variance.
+The holdout factor \eqn{\tau} solves the corresponding moment equation.
+The predictive SD then grows smoothly with the distance to the data and
+reaches the marginal field variance far from it. \code{FALSE} restores the
+total \eqn{\tau}-scaled variance capped at the marginal field variance
+(spCF <= 0.2.1), which leaves rings around isolated sites. Point
+predictions and coefficient estimates do not depend on this argument.}
 }
 \value{
 A list with the following elements:
