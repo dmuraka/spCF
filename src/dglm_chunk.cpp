@@ -20,7 +20,7 @@ List dglm_scale_chunk(IntegerVector ptr, IntegerVector idx, NumericVector w,
                       NumericMatrix W0t, NumericMatrix R0t,
                       int K, double rho, double Q,
                       IntegerVector pptr, IntegerVector pidx, NumericVector pw,
-                      int n0) {
+                      int n0, int return_state = 0) {
   const int T  = W0t.nrow();          // time-major: rows = time
   const int nL = W0t.ncol();          //            cols = sites
   const double eps = 1e-12;
@@ -51,6 +51,8 @@ List dglm_scale_chunk(IntegerVector ptr, IntegerVector idx, NumericVector w,
   // ---- 2. per-knot AR(1) Kalman filter + RTS smoother -> m, P (T x K) ----
   std::vector<double> m((size_t)T * K), P((size_t)T * K);
   std::vector<double> af(T), Pf(T), ap(T), Pp(T);
+  // filtered variances, kept (return_state = 1) for bridging to new time points
+  std::vector<double> Pf_all(return_state ? (size_t)T * K : 0);
   const double P0 = Q / (1.0 - rho * rho);
   for (int k = 0; k < K; ++k) {
     const double *dk = &den[(size_t)T * k], *zk = &Znum[(size_t)T * k],
@@ -70,6 +72,7 @@ List dglm_scale_chunk(IntegerVector ptr, IntegerVector idx, NumericVector w,
         p = (1.0 - Kg) * p_pred;
       } else { a = a_pred; p = p_pred; }              // missing -> predict only
       af[t] = a; Pf[t] = p;
+      if (return_state) Pf_all[(size_t)T * k + t] = p;
     }
     double ms = af[T - 1], ps = Pf[T - 1];
     mk[T - 1] = ms; Pk[T - 1] = ps > 1e-8 ? ps : 1e-8;
@@ -94,6 +97,7 @@ List dglm_scale_chunk(IntegerVector ptr, IntegerVector idx, NumericVector w,
   // observation variances, not on the data values -- is rerun with
   // Qv = P0v (1 - rho^2). Pv (T x K) then feeds Vd.
   std::vector<double> Pv((size_t)T * K);
+  std::vector<double> vPf_all(return_state ? (size_t)T * K : 0);
   auto var_path = [&](double P0v) {
     const double Qv = P0v * (1.0 - rho * rho);
     std::vector<double> vPf(T), vPp(T);
@@ -107,6 +111,7 @@ List dglm_scale_chunk(IntegerVector ptr, IntegerVector idx, NumericVector w,
         if (d > eps) { const double Rkt = rk[t] / (d * d); p = (1.0 - p_pred / (p_pred + Rkt)) * p_pred; }
         else p = p_pred;
         vPf[t] = p;
+        if (return_state) vPf_all[(size_t)T * k + t] = p;
       }
       double ps = vPf[T - 1]; Pk[T - 1] = ps > 1e-12 ? ps : 1e-12;
       for (int t = T - 2; t >= 0; --t) {
@@ -144,8 +149,10 @@ List dglm_scale_chunk(IntegerVector ptr, IntegerVector idx, NumericVector w,
   // kernel support, and equals P0v where no knot reaches the site. The returned
   // "P0" is P0v, so Vd / P0 is the fraction of the scale's prior that remains. V keeps the
   // original gPoE variance (fallback max(1, max V)) for backward compatibility.
+  double vmx_tr = 1.0;                         // fallback V of the training recombination
   auto gpoe = [&](IntegerVector P_ptr, IntegerVector P_idx, NumericVector P_w,
-                  int n, NumericMatrix &F, NumericMatrix &V, NumericMatrix &Vd) {
+                  int n, NumericMatrix &F, NumericMatrix &V, NumericMatrix &Vd,
+                  double *vmx_out) {
     std::vector<double> gden((size_t)T * n, 0.0), gnum((size_t)T * n, 0.0),
                         gdd((size_t)T * n, 0.0), sumw((size_t)n, 0.0);
     for (int i = 0; i < n; ++i) {
@@ -170,6 +177,7 @@ List dglm_scale_chunk(IntegerVector ptr, IntegerVector idx, NumericVector w,
         const double g = gden[(size_t)T * i + t];
         if (g > 0.0) { double v = sumw[i] / g; if (v > vmx) vmx = v; }
       }
+    if (vmx_out) *vmx_out = vmx;
     for (int i = 0; i < n; ++i) {
       const double *gd = &gden[(size_t)T * i], *gn = &gnum[(size_t)T * i];
       const double sw = sumw[i];
@@ -184,12 +192,51 @@ List dglm_scale_chunk(IntegerVector ptr, IntegerVector idx, NumericVector w,
   };
 
   NumericMatrix Ftr(nL, T), Vtr(nL, T), Vtr_d(nL, T);
-  gpoe(ptr, idx, w, nL, Ftr, Vtr, Vtr_d);
+  gpoe(ptr, idx, w, nL, Ftr, Vtr, Vtr_d, &vmx_tr);
   List out = List::create(_["Ftr"] = Ftr, _["Vtr"] = Vtr, _["Vtr_d"] = Vtr_d, _["P0"] = P0v);
   if (n0 > 0) {
     NumericMatrix Fpr(n0, T), Vpr(n0, T), Vpr_d(n0, T);
-    gpoe(pptr, pidx, pw, n0, Fpr, Vpr, Vpr_d);
+    gpoe(pptr, pidx, pw, n0, Fpr, Vpr, Vpr_d, 0);
     out["Fpr"] = Fpr; out["Vpr"] = Vpr; out["Vpr_d"] = Vpr_d;
   }
+  if (return_state) {
+    // knot state (T x K, time-major as stored): smoothed mean m and variance P,
+    // filtered variance Pf, and the variance path (smoothed Pv, filtered vPf)
+    auto mk = [&](const std::vector<double> &v) {
+      NumericMatrix M(T, K); std::copy(v.begin(), v.end(), M.begin()); return M; };
+    out["state"] = List::create(_["m"] = mk(m), _["P"] = mk(P), _["Pf"] = mk(Pf_all),
+                                _["Pv"] = mk(Pv), _["vPf"] = mk(vPf_all),
+                                _["P0v"] = P0v, _["vmx"] = vmx_tr);
+  }
   return out;
+}
+
+// gPoE recombination of stored knot states at sites that each carry one time
+// column (tcol, 0-based, into the T' x K state matrices m, P, Pv). Repeats the
+// arithmetic of the gpoe() lambda of dglm_scale_chunk for that column, so a
+// site at a training time gets exactly the value of the fit.
+// [[Rcpp::export]]
+List dglm_gpoe_rows(IntegerVector ptr, IntegerVector idx, NumericVector w,
+                    IntegerVector tcol, NumericMatrix m, NumericMatrix P,
+                    NumericMatrix Pv, double P0v, double vmx) {
+  const int n = tcol.size(), T = m.nrow();
+  NumericVector F(n), V(n), Vd(n);
+  for (int i = 0; i < n; ++i) {
+    const int t = tcol[i];
+    double gd = 0.0, gn = 0.0, g2 = 0.0, sw = 0.0;
+    for (int nz = ptr[i]; nz < ptr[i + 1]; ++nz) {
+      const int k = idx[nz];
+      const double wik = w[nz];
+      sw += wik;
+      const size_t j = (size_t)T * k + t;
+      const double iP = 1.0 / P[j], mP = m[j] * iP;
+      const double c2 = wik * wik > 1.0 ? 1.0 : wik * wik;
+      gd += wik * iP; gn += wik * mP;
+      g2 += wik / (c2 * Pv[j] + (1.0 - c2) * P0v);
+    }
+    if (gd > 0.0) { F[i] = gn / gd; V[i] = sw / gd; }
+    else          { F[i] = 0.0;     V[i] = vmx;     }
+    Vd[i] = g2 > 0.0 ? sw / g2 : P0v;
+  }
+  return List::create(_["F"] = F, _["V"] = V, _["Vd"] = Vd);
 }

@@ -208,12 +208,46 @@
 }
 
 .sp_raster <- function(mod, layer, crs_str, bw_range = c(0, Inf),
-                       time_range = c(-Inf, Inf)) {
+                       time_range = c(-Inf, Inf), size = 1) {
   df <- tryCatch(.sp_xyz(mod, layer, bw_range, time_range), error = function(e) NULL)
   if (is.null(df) || !nrow(df) || all(!is.finite(df$z))) return(NULL)
-  r <- tryCatch(terra::rast(df, type = "xyz", crs = crs_str), error = function(e) NULL)
-  if (is.null(r)) r <- .sp_rast_nn(df, crs_str)      # irregular sites
+  r <- .sp_lattice(df, crs_str)
+  if (is.null(r)) r <- .sp_rast_nn(df, crs_str, size)  # irregular sites
   .sp_rast_display(r)
+}
+
+## The sites as a raster when they form a lattice, otherwise NULL. terra also
+## accepts irregular sites whose coordinates happen to share a fine resolution
+## (e.g. integer metres), giving a huge, almost empty raster in which each site
+## is an invisible pixel; the sites are taken for a lattice only when they fill
+## at least 5% of its cells (a lattice with an irregular outline, such as
+## meuse.grid, fills about 40%).
+.sp_lattice <- function(df, crs_str) {
+  r <- tryCatch(terra::rast(df[, c("x", "y", "z")], type = "xyz", crs = crs_str),
+                error = function(e) NULL)
+  if (!is.null(r) && nrow(unique(df[, c("x", "y")])) < 0.05 * terra::ncell(r)) r <- NULL
+  r
+}
+
+## TRUE when the mapped sites of a fit are drawn as circles (not a lattice)
+.sp_uses_circles <- function(mod) {
+  if (.sp_is_downscale(mod)) return(FALSE)
+  df <- tryCatch(.sp_xyz(mod, "pred"), error = function(e) NULL)
+  !is.null(df) && nrow(df) > 0 && is.null(.sp_lattice(df, ""))
+}
+
+## Default radius of the circles drawn around irregular sites, common to all
+## sites: 0.75 times the median distance to the nearest other site (so that
+## sites at the typical spacing roughly meet), but at least 1/300 of the
+## diagonal of the mapped region, so that the sites stay visible when the whole
+## region is shown even where most of them are packed into a small part of it.
+## The "Circle size" slider of the app scales it.
+.sp_circle_r0 <- function(xy) {
+  uxy  <- unique(xy)
+  diag <- sqrt(diff(range(uxy[, 1]))^2 + diff(range(uxy[, 2]))^2)
+  if (nrow(uxy) < 2) return(if (diag > 0) diag / 300 else 1)
+  md <- stats::median(FNN::get.knn(uxy, k = 1)$nn.dist[, 1])
+  max(0.75 * md, diag / 300)
 }
 
 ## Upsample a coarse raster before it is handed to leaflet.
@@ -247,15 +281,23 @@
 ## Drawing one marker per site instead keeps them all, but tens of thousands of
 ## fixed-pixel circles pile up into an unreadable blob as soon as the map is
 ## zoomed out, and the browser has to draw every one of them on each redraw.
-## Nearest-neighbour fill keeps ~99% of the sites, has no holes at any zoom, and
-## hands the browser a single PNG. The k-d tree query is the only added cost.
-.sp_rast_nn <- function(df, crs_str) {
+## Nearest-neighbour fill keeps ~99% of the sites and hands the browser a single
+## PNG; each site colours only a circle around itself (below), so the map shows
+## where predictions were made and nothing far from them.
+.sp_rast_nn <- function(df, crs_str, size = 1) {
   xy <- cbind(df$x, df$y)
-  xr <- range(xy[, 1]); yr <- range(xy[, 2])
+  ## Each site colours the cells within a circle of a common radius (the default
+  ## of .sp_circle_r0() times 'size', the "Circle size" slider of the app);
+  ## where circles overlap a cell takes the value of its nearest site, and cells
+  ## outside every circle stay blank, so nothing far from a prediction site is
+  ## coloured.
+  rad <- .sp_circle_r0(xy) * size
+  xr <- range(xy[, 1]) + c(-rad, rad); yr <- range(xy[, 2]) + c(-rad, rad)
   if (!all(is.finite(c(xr, yr))) || diff(xr) <= 0 || diff(yr) <= 0) return(NULL)
-  ## ~16 cells per site: fine enough that sites are only merged where two of
-  ## them fall inside one cell, capped so the PNG stays small and quick to draw
-  ncell <- min(3e5, max(5e4, 16 * nrow(df)))
+  ## ~16 cells per site, and cells no larger than a quarter of the radius so the
+  ## circles look round, capped so the PNG stays small and quick to draw
+  need  <- (diff(xr) / (rad / 4)) * (diff(yr) / (rad / 4))
+  ncell <- min(3e5, max(5e4, 16 * nrow(df), need))
   asp   <- diff(xr) / diff(yr)
   nc    <- max(2L, as.integer(round(sqrt(ncell * asp))))
   nr    <- max(2L, as.integer(round(ncell / nc)))
@@ -263,12 +305,7 @@
                     ymin = yr[1], ymax = yr[2], crs = crs_str)
   nn <- FNN::get.knnx(xy, terra::xyFromCell(r, seq_len(terra::ncell(r))), k = 1)
   z  <- df$z[nn$nn.index[, 1]]
-  ## Blank cells that sit farther from every site than the sites sit from each
-  ## other, so the mapped area keeps the shape of the study region instead of
-  ## flooding the whole bounding box (sea, land outside the sample, ...).
-  gap <- tryCatch(stats::quantile(FNN::get.knn(xy, k = 1)$nn.dist[, 1], 0.99,
-                                  names = FALSE), error = function(e) NA_real_)
-  if (is.finite(gap)) z[nn$nn.dist[, 1] > 2 * gap] <- NA_real_
+  z[nn$nn.dist[, 1] > rad] <- NA_real_
   terra::values(r) <- z
   names(r) <- "z"
   r
@@ -401,6 +438,9 @@ sp_map_controls <- function(id) {
       shiny::conditionalPanel(                 # only when the result is points
         sprintf("output['%s'] == true", ns("use_pts")),
         shiny::sliderInput(ns("ptsize"), "Point size", 1, 12, 6, 1)),
+      shiny::conditionalPanel(                 # irregular sites drawn as circles
+        sprintf("output['%s'] == true", ns("use_circ")),
+        shiny::sliderInput(ns("csize"), "Circle size (x default)", 0.25, 4, 1, 0.25)),
       shiny::checkboxInput(ns("show_pts"), "Show observed data", FALSE),
       shiny::tags$hr(),
       shiny::downloadButton(ns("dl"), "Download predictions (CSV)",
@@ -491,17 +531,27 @@ sp_map_server <- function(id, mod, crs, preview = NULL, home = NULL,
         leaflet::fitBounds(bb[["xmin"]], bb[["ymin"]], bb[["xmax"]], bb[["ymax"]])
     })
 
-    ## time-range slider - only for cf_dglm fits
+    ## time-range slider - only for cf_dglm fits. The map shows the prediction
+    ## sites when there are any (.sp_use0), so the slider then spans the
+    ## prediction time points, min(time0) to max(time0); otherwise the training
+    ## time points.
     tvals <- shiny::reactive({
       m <- mod(); if (is.null(m) || !.sp_is_dglm(m)) return(NULL)
-      tt <- c(m$other$time, m$other$time0); tt <- tt[is.finite(tt)]
+      tt <- if (.sp_use0(m) && !is.null(m$other$time0)) m$other$time0 else m$other$time
+      tt <- tt[is.finite(tt)]
       if (!length(tt)) NULL else tt
     })
     output$time_ui <- shiny::renderUI({
       tt <- tvals(); if (is.null(tt)) return(NULL)
       rng <- range(tt)
       lv  <- sort(unique(tt))
-      step <- if (all(lv == round(lv))) 1 else signif(diff(rng) / 100, 2)
+      if (length(lv) == 1L)                    # a single time point: nothing to slide
+        return(shiny::helpText(sprintf("Time point: %s", format(lv))))
+      ## equally spaced time points (e.g. every six months): step by that
+      ## spacing, so only time points that carry predictions can be selected
+      dl   <- diff(lv)
+      step <- if (all(abs(dl - dl[1]) < 1e-8 * max(1, abs(dl[1])))) dl[1]
+              else if (all(lv == round(lv))) 1 else signif(diff(rng) / 100, 2)
       shiny::tagList(
         ## default to the LAST time point (a single slice) rather than the whole
         ## range, so the initial map shows one time point instead of the average
@@ -512,7 +562,9 @@ sp_map_server <- function(id, mod, crs, preview = NULL, home = NULL,
                         "(a single point shows that time slice)."))
     })
     time_range <- shiny::reactive({
-      tt <- tvals(); if (is.null(tt) || is.null(input$trange)) return(c(-Inf, Inf))
+      tt <- tvals(); if (is.null(tt)) return(c(-Inf, Inf))
+      if (length(unique(tt)) == 1L) return(rep(tt[1], 2))
+      if (is.null(input$trange)) return(c(-Inf, Inf))
       input$trange
     })
 
@@ -609,7 +661,8 @@ sp_map_server <- function(id, mod, crs, preview = NULL, home = NULL,
     layer_raster <- shiny::reactive({
       m <- mod(); shiny::req(m)
       br <- band_range(); if (is.null(br)) return(NULL)  # empty scale range
-      .sp_raster(m, input$layer, crs_str(), br, tr_d())
+      .sp_raster(m, input$layer, crs_str(), br, tr_d(),
+                 size = if (is.null(input$csize)) 1 else input$csize)
     })
     layer_points <- shiny::reactive({          # cf_downscale: irregular sites
       m <- mod(); shiny::req(m)
@@ -624,6 +677,12 @@ sp_map_server <- function(id, mod, crs, preview = NULL, home = NULL,
       m <- mod(); !is.null(m) && .sp_point_render(m) && is.null(poly_geom())
     })
     shiny::outputOptions(output, "use_pts", suspendWhenHidden = FALSE)
+    ## irregular sites of cf_lm / cf_glm / cf_dglm are drawn as circles whose
+    ## common size the "Circle size" slider scales
+    output$use_circ <- shiny::reactive({
+      m <- mod(); !is.null(m) && .sp_uses_circles(m)
+    })
+    shiny::outputOptions(output, "use_circ", suspendWhenHidden = FALSE)
 
     build_pal <- function(vals) {
       p <- input$palette; rv <- isTRUE(input$rev_pal)

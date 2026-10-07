@@ -33,13 +33,6 @@
 #'   The mean/signal versions are kept in \code{pred_signal}/\code{pred_q_signal}.
 #'   \code{"mean"} returns the signal (mean) uncertainty only (previous
 #'   behaviour). See \code{other$calibration} for the fitted calibration.
-#' @param stage_bound If \code{TRUE} (default), the link-scale
-#'   spatial-process predictive variance is bounded stage by stage as in
-#'   \code{\link{cf_lm}}: \eqn{\min(\tau\, pv_r, \kappa s_r^2)} with the stage
-#'   caps rescaled to sum to the marginal field variance, and the holdout factor
-#'   \eqn{\tau} solving the working-weighted moment equation. Ignored for the
-#'   binomial family, whose field variance is left uncapped. \code{FALSE}
-#'   restores the behaviour of spCF <= 0.2.1.
 #' @param se_method Cluster-robust coefficient-SE estimator (used when
 #'   \code{robust_se = TRUE}). \code{"opt"} (default) splits the sandwich
 #'   meat into a field-removed observation-noise part and a field part that adds
@@ -47,6 +40,21 @@
 #'   correlation (\code{h} = median committed bandwidth); this is near-nominal. A refit-free leverage leave-one-out ceiling then caps the field term, preventing over-coverage for count (Poisson) responses while leaving already-calibrated families unchanged.
 #'   \code{"classic"} keeps the realised field inside the working residual (the
 #'   previous behaviour), which is valid but conservative.
+#'
+#' @param keep_scales If \code{TRUE} (default), the scale-wise processes
+#'   \code{Z}, \code{Z_sd}, \code{Z0} and \code{Z0_sd} are kept in the output.
+#'   They hold one column per selected scale for every sample (and prediction) site, which makes them the
+#'   largest part of the fitted object for large data. With \code{FALSE} they are
+#'   dropped (\code{NULL}); predictions, standard errors, \code{sd_summary} and
+#'   the maps of \code{\link{spCFmap}} for the total prediction are unchanged,
+#'   but \code{\link{sp_scalewise}} needs them.
+#'
+#' @details
+#' The link-scale spatial-process predictive variance is bounded stage by stage
+#' as in \code{\link{cf_lm}}: \eqn{\min(\tau\, pv_r, \kappa s_r^2)} with the stage
+#' caps rescaled to sum to the marginal field variance, and the holdout factor
+#' \eqn{\tau} solving the working-weighted moment equation. For the binomial
+#' family the field variance is left uncapped.
 #'
 #' @return A list with the following elements:
 #' \describe{
@@ -68,7 +76,10 @@
 #'   \code{q0.05}, \code{q0.1}, ..., \code{q0.9}, \code{q0.95}, \code{q0.975},
 #'   \code{q0.995} give the corresponding quantile levels, obtained by
 #'   Gaussian approximation on the link scale followed by inverse-link
-#'   transformation.}
+#'   transformation (with \code{se_type = "prediction"}, from the calibrated
+#'   observation predictive). Not stored in the object: \code{mod$pred_q}
+#'   computes it on access, at the 15 levels listed above;
+#'   \code{\link{predict.cf_glm}} gives them at other levels and at new sites.}
 #'   \item{pred0_q}{Predictive quantiles on the response scale at the
 #'   prediction sites. Column structure is identical to \code{pred_q}.
 #'   \code{NULL} when prediction sites are not supplied.}
@@ -81,7 +92,8 @@
 #'   \item{Z0}{Predictive mean of the spatial process at each scale
 #'   (prediction sites; list).}
 #'   \item{Z0_sd}{Predictive standard deviation of the spatial process at each
-#'   scale (prediction sites; list).}
+#'   scale (prediction sites; list). \code{Z}, \code{Z_sd}, \code{Z0} and
+#'   \code{Z0_sd} are \code{NULL} when \code{keep_scales = FALSE}.}
 #'   \item{other}{Other internally used output objects.}
 #' }
 #'
@@ -130,8 +142,6 @@
 #' GGHB.IZ$z2  <- mod_s2$pred$pred
 #' plot(GGHB.IZ[,c("z1","z2")],lwd=0.2,axes=TRUE,key.pos=4, nbreaks=50)# Extracted features
 #'
-#' ### The same fit, explored interactively over a basemap
-#' # spCFmap(mod, crs = 27700)   # crs = the system the coordinates are in
 #'
 #'
 #' ################ Example 2: Binary data modeling/spatial prediction
@@ -175,6 +185,16 @@
 #' ### The same fit, explored interactively over a basemap
 #' # spCFmap(mod, crs = 28992)   # crs = the system the coordinates are in
 #'
+#' ### Prediction with predict(): the model can be fitted WITHOUT prediction
+#' ### sites (no x0, coords0) and used to predict at any sites later; the
+#' ### training data are not needed then. For a binary response,
+#' ### se_type = "mean" gives the quantiles of the probability (those of a
+#' ### single 0/1 observation are degenerate).
+#' mod_f    <- cf_glm(y = y, x = x, coords = coords, mod_hv = mod_hv)  # no x0, coords0
+#' p        <- predict(mod_f, x0 = x0, coords0 = coords0,
+#'                     probs = c(0.025, 0.975), se_type = "mean")
+#' head(p)
+#' all.equal(p$pred, mod$pred0_signal$pred)   # same as cf_glm(..., coords0 = coords0)
 #'
 #' @author Daisuke Murakami
 #'
@@ -189,7 +209,7 @@
 cf_glm          <- function(y, x=NULL, coords, offset=NULL,
                             x0=NULL, coords0=NULL, offset0=NULL, mod_hv,
                             robust_se=TRUE, se_type=c("prediction","mean"),
-                            se_method=c("opt","classic"), stage_bound=TRUE){
+                            se_method=c("opt","classic"), keep_scales=TRUE){
   se_type        <- match.arg(se_type)
   se_method      <- match.arg(se_method)
 
@@ -198,7 +218,14 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
   .spcf_check_newdata(x = x, x0 = x0, coords0 = coords0, offset0 = offset0)
 
   family         <- .spcf_prepare_family(mod_hv$other$family)
-  stage_on       <- isTRUE(stage_bound) && !identical(family$family, "binomial")
+  ## per-stage variance bound (Details); FALSE only through an internal option
+  stage_on       <- isTRUE(getOption("spcf.stage_bound", TRUE)) && !identical(family$family, "binomial")
+  ## The fit itself never uses the prediction sites: they are set aside here and
+  ## predicted at the end from the stored knot states (.spcf_glm_new(), the same
+  ## code as predict.cf_glm()), so every coords0 branch below is inactive.
+  x0_new         <- x0; coords0_new <- coords0; offset0_new <- offset0
+  xcols_in       <- if(is.null(dim(x))) NULL else colnames(x)   # covariate names for predict()
+  x0             <- coords0 <- offset0 <- NULL
   bands          <- mod_hv$other$bands
   bands_all      <- mod_hv$other$bands_all
   coords_uni     <- mod_hv$other$coords_uni
@@ -274,6 +301,7 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
   b_old          <- NULL
   Z     <- Z_sd  <- matrix(0,nrow=n ,ncol=length(bands))
   Z_pv           <- matrix(0,nrow=n ,ncol=length(bands))   # eq.(10) predictive var (link)
+  scales         <- list()
   l_pred         <- 0
   if(!is.null(bands)){
     for(i in 1:max(bands_scale)){
@@ -281,7 +309,8 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
       lmod       <- lwr_glm(coords=coords, coords_uni=coords_uni, resid=resid, y=y, x=x, w=w,
                             band=bands_all[i], b_old=b_old, vc=vc, id_train=id_train,
                             ridge=ridge,kernel=kernel, x0=x0, coords0=coords0,l_pred=l_pred,
-                            sel_id=sel_id_list[[i]], family=family,func="cf_glm")
+                            sel_id=sel_id_list[[i]], family=family,func="cf_glm",
+                            keep_state=TRUE)
 
       b_old      <- lmod$b_old
       if(length(vc)>0){
@@ -302,6 +331,8 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
         Z_sd[,ii]   <- sqrt(beta_v_add[,1])
         bpv         <- lmod$beta_pv[,1]; bpv[!is.finite(bpv)] <- if(stage_on) Inf else 0
         Z_pv[,ii]   <- sqrt(bpv)
+        if(length(ii) == 1L)                        # knot state for prediction at new sites
+          scales[[length(scales)+1]] <- list(state=lmod$state, ii=ii, zshift=l_bias)
 
         l_pred_off  <- .spcf_clip_l(l_pred, family) + offset
         gmod0       <- glm(y ~ 0 + x + offset(l_pred_off),family=family)
@@ -354,6 +385,7 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
                                lower_95CI=beta_int-1.96*beta_int_se,
                                upper_95CI=beta_int+1.96*beta_int_se)
   beta           <- matrix(beta_int[,1], nrow = n , ncol = nx, byrow = TRUE)
+  beta_int_new0  <- beta_int[,1]                   # coefficients used at new sites
   if(!is.null(coords0)){
     beta0        <- matrix(beta_int[,1], nrow = n0, ncol = nx, byrow = TRUE)
   }
@@ -507,9 +539,9 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
   pred_lin_sd  <- sqrt( rowSums((x %*% beta_int_vmat) * x ) + fv_cal)
   pred_sd      <- response_se(pred_lin=pred_lin, pred_lin_sd=pred_lin_sd, family=family)
 
-  pred_q       <- predict(gmod,type="link") + outer(pred_lin_sd, qnorm(qs), "*")
-  pred_q       <- data.frame(inv_link_fun(pred_q,family=family))
-  names(pred_q)<- paste("q", qs,sep="")
+  ## Quantiles are not stored: .spcf_quantile() rebuilds them from qspec
+  qspec        <- list(probs = qs, family = family,
+                       lin = as.numeric(predict(gmod,type="link")), lin_sd = as.numeric(pred_lin_sd))
   #pred_sim     <- sample_from_qrf(pred_q, qs = qs, n=n, n_draw=100)
 
   if(!is.null(coords0)){
@@ -526,19 +558,19 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
     pred0_lin_sd<- sqrt( rowSums((x0 %*% beta_int_vmat)* x0) + fv0_cal)
     pred0_sd    <- response_se(pred_lin=pred0_lin, pred_lin_sd=pred0_lin_sd, family=family)
 
-    pred0_q    <- predict(gmod,type="link",newdata=gmod0_dat) + outer(pred0_lin_sd, qnorm(qs), "*")
-    pred0_q    <- data.frame( inv_link_fun(pred0_q,family=family) )
-    names(pred0_q)<- paste("q", qs,sep="")
+    qspec$lin0    <- as.numeric(predict(gmod,type="link",newdata=gmod0_dat))
+    qspec$lin0_sd <- as.numeric(pred0_lin_sd)
     #pred0_sim  <- sample_from_qrf(pred0_q, qs = qs, n=n0, n_draw=100)# Crossing?
     #pred0_sd   <- apply(pred0_sim, 1, sd)
   }
   #  a_mod      <- list(a_par=NA, a_run=FALSE, add_learn=add_learn)
   #}
 
-  pred_ms      <- data.frame( pred, pred_sd )
+  ## as.numeric(): drop names, which would otherwise become character row names
+  pred_ms      <- data.frame( pred=as.numeric(pred), pred_sd=as.numeric(pred_sd) )
   pred0_ms     <- NULL
   if(!is.null(coords0)){
-    pred0_ms   <- data.frame( pred=pred0, pred_sd=pred0_sd )
+    pred0_ms   <- data.frame( pred=as.numeric(pred0), pred_sd=as.numeric(pred0_sd) )
   }
 
   ######### spatial process
@@ -601,19 +633,35 @@ cf_glm          <- function(y, x=NULL, coords, offset=NULL,
   other          <- list(n=n,n0=n0,nx=nx,y=y,x=x,x0=x0,VCmat=VCmat, #a_mod=a_mod,
                          coords=coords,coords0=coords0,vc=mod_hv$other$vc,
                          pred_pre=pred_pre, loss_hv=mod_hv$loss_hv, tau=tau,
-                         family=family)
+                         family=family, qspec=qspec,
+                         keep_scales=isTRUE(keep_scales))
+  ## keep_scales = FALSE drops the scale-wise processes (n x scales tables);
+  ## sd_summary above was computed from them before they are dropped
+  if(!isTRUE(keep_scales)) Z <- Z_sd <- Z0 <- Z0_sd <- NULL
   result         <- list(beta=beta_int_summ, sd_summary=sd_summary,
                          e_summary=e_summary, pred=pred_ms,pred0=pred0_ms,
-                         pred_q=pred_q,pred0_q=pred0_q, bands=bands,
+                         bands=bands,
                          Z=Z,Z_sd=Z_sd, Z0=Z0, Z0_sd=Z0_sd, other=other,
                          call = match.call() )
   if(identical(se_type,"prediction")){
+    ofam <- .spcf_obs_fam(family, y)
     ob <- tryCatch(.spcf_obs_predict(family=family, y=y, mod_hv=mod_hv,
-                     pred_in=result$pred$pred, predq_in=result$pred_q,
-                     pred_out=result$pred0$pred, predq_out=result$pred0_q),
+                     pred_in=result$pred$pred,
+                     s_in=.spcf_signal_slink(qspec, "sample", family, ofam),
+                     pred_out=result$pred0$pred,
+                     s_out=.spcf_signal_slink(qspec, "prediction", family, ofam)),
                    error=function(e) NULL)
     result <- .spcf_apply_obs(result, ob)
   } else result$other$se_type <- "mean"
+  ## What predict.cf_glm() needs, without the training data (see cf_lm)
+  result$other$pcore <- list(type="glm", scales=scales, nS=length(bands), x_sel=x_sel, xcols=xcols_in,
+                             nx=nx, beta_int=beta_int_new0, gcoef=stats::coef(gmod),
+                             family=family, vmat=beta_int_vmat, stage_bound=stage_on,
+                             caps=caps, tau=tau, sill=sill)
+  if(!is.null(coords0_new)){
+    nw     <- .spcf_glm_new(result$other$pcore, x0_new, coords0_new, offset0_new)
+    result <- .spcf_put_new(result, nw, coords0_new)
+  }
   class( result )<- "cf_glm"
   return( result )
 }

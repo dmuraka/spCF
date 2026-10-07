@@ -230,6 +230,24 @@ plot(meuse.grid_sf[,"pred_sd"], pal = function(n) hcl.colors(n, "Viridis"),
      border = NA,key.pos=4,axes=TRUE)
 ```
 
+### Prediction at new sites with `predict()`
+
+As in `cf_lm`, the model can be fitted without prediction sites (no `x0`, `coords0`), and `predict()` then predicts at any sites later from the fitted object alone, with the same result as giving those sites as `coords0` in `cf_glm()`:
+
+```{r, eval = FALSE}
+mod_f <- cf_glm(y = flood, x = x, coords = coords, mod_hv = mod_hv)   # no x0, coords0
+p     <- predict(mod_f, x0 = x0, coords0 = coords0, probs = c(0.025, 0.5, 0.975),
+                 se_type = "mean")
+```
+
+Applied to `mod` above, which avoids refitting here, it reproduces `mod$pred0`. For a binary response the interval of a single 0/1 observation is degenerate, so the quantiles of the predicted probability are asked for with `se_type = "mean"`:
+
+```{r}
+p <- predict(mod, x0 = x0, coords0 = coords0, probs = c(0.025, 0.5, 0.975),
+             se_type = "mean")
+head(p)
+```
+
 ### Multiscale spatial pattern/feature extraction
 
 Let us extract the large- and small-scale processes, corresponding to bandwidth ranges of 1000+ and 0–1000, respectively.

@@ -239,7 +239,7 @@
 ## end with predict = TRUE.
 #' @keywords internal
 #' @noRd
-.dglm_scale_apply <- function(su, Rtr, Wtr, rho, Q, predict = TRUE) {
+.dglm_scale_apply <- function(su, Rtr, Wtr, rho, Q, predict = TRUE, return_state = FALSE) {
   W0 <- Wtr; W0[is.na(W0)] <- 0
   R0 <- Rtr; R0[is.na(R0)] <- 0
   use_pr <- predict && su$n0 > 0
@@ -247,9 +247,9 @@
   n0 <- if (use_pr) su$n0 else 0L
   ## panels passed time-major (t() -> nT x nL) so the C++ inner t-loop is contiguous
   res <- dglm_scale_chunk(su$nb$ptr, su$nb$idx, su$nb$w, t(W0), t(R0), su$K, rho, Q,
-                          pb$ptr, pb$idx, pb$w, n0)
+                          pb$ptr, pb$idx, pb$w, n0, as.integer(isTRUE(return_state)))
   out <- list(Ftr = res$Ftr, Vtr = res$Vtr, Vtr_d = res$Vtr_d, P0 = res$P0,
-              peeled = Rtr - res$Ftr, knots = su$knots)
+              peeled = Rtr - res$Ftr, knots = su$knots, state = res$state)
   if (n0 > 0) { out$Fpr <- res$Fpr; out$Vpr <- res$Vpr; out$Vpr_d <- res$Vpr_d }
   out
 }
@@ -322,7 +322,7 @@
       as[[t]] <- a_f[[t]] + drop(G %*% (as[[t + 1]] - a_p[[t + 1]]))
       Ps[[t]] <- P_f[[t]] + G %*% (Ps[[t + 1]] - P_p[[t + 1]]) %*% t(G)
     }
-    list(a = as, P = Ps)
+    list(a = as, P = Ps, af = a_f, Pf = P_f)
   }
   if (is.null(q)) {
     ## per-coefficient drift estimated by d-dimensional ML of the log-drift; if
@@ -339,7 +339,7 @@
   }
   sm   <- run(q, smooth = TRUE)
   beta <- matrix(unlist(sm$a), nrow = nT, ncol = d, byrow = TRUE)
-  list(beta = beta, V = sm$P, q = q)
+  list(beta = beta, V = sm$P, q = q, af = sm$af, Pf = sm$Pf)
 }
 
 ## Spatial-block cluster-robust covariance for the constant coefficients.

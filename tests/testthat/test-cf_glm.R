@@ -125,6 +125,7 @@ test_that("negbin() estimates theta and gives a negative binomial predictive", {
 })
 
 test_that("negbin(theta) matches MASS::negative.binomial(theta)", {
+  skip_if_not_installed("MASS")
   set.seed(22)
   y  <- rnbinom(length(d$field), size = 2, mu = exp(0.5 + 0.5 * d$field))
   h1 <- quiet(cf_glm_hv(y = y, x = d$x, coords = d$coords, family = negbin(2)))

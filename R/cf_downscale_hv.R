@@ -47,7 +47,7 @@
 #'
 #' @references
 #' Murakami, D., Chun, Y., Yoshida, T., & Seya, H. (2026).
-#' Scalable coarse-to-fine spatial downscaling. *ArXiv preprint*.
+#' Scalable coarse-to-fine spatial downscaling. *ArXiv preprint*, 2606.29798.
 #'
 #' @seealso \code{\link{cf_downscale}}, \code{\link{cf_lm_hv}}
 #' @author Daisuke Murakami

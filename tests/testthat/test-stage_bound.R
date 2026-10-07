@@ -1,4 +1,5 @@
-## Per-stage bounded predictive variance (stage_bound, internal_stage_var.R).
+## Per-stage bounded predictive variance (internal_stage_var.R). The bound is always
+## on; the internal option spcf.stage_bound = FALSE restores spCF <= 0.2.1 for comparison.
 
 d  <- sim_spatial(n = 150, seed = 11)
 hv <- quiet(cf_lm_hv(y = d$y, x = d$x, coords = d$coords))
@@ -8,8 +9,7 @@ x0  <- data.frame(v1 = 0, v2 = 0.5)[rep(1, nrow(far)), ]
 
 test_that("stage_bound leaves point predictions and coefficients unchanged", {
   a <- quiet(cf_lm(y = d$y, x = d$x, coords = d$coords, x0 = x0, coords0 = far, mod_hv = hv))
-  b <- quiet(cf_lm(y = d$y, x = d$x, coords = d$coords, x0 = x0, coords0 = far, mod_hv = hv,
-                   stage_bound = FALSE))
+  b <- withr::with_options(list(spcf.stage_bound = FALSE), quiet(cf_lm(y = d$y, x = d$x, coords = d$coords, x0 = x0, coords0 = far, mod_hv = hv)))
   expect_equal(a$pred0$pred, b$pred0$pred)
   expect_equal(a$beta_int_summ$coef, b$beta_int_summ$coef)
 })
@@ -43,7 +43,7 @@ test_that("cf_glm uses the bound for poisson and ignores it for binomial", {
   expect_true(all(is.finite(mp$pred0$pred_sd)))
   hb <- quiet(cf_glm_hv(y = yb, coords = cs, family = binomial()))
   b1 <- quiet(cf_glm(y = yb, coords = cs, coords0 = far, mod_hv = hb))
-  b0 <- quiet(cf_glm(y = yb, coords = cs, coords0 = far, mod_hv = hb, stage_bound = FALSE))
+  b0 <- withr::with_options(list(spcf.stage_bound = FALSE), quiet(cf_glm(y = yb, coords = cs, coords0 = far, mod_hv = hb)))
   expect_identical(b1$pred0, b0$pred0)
 })
 
@@ -56,9 +56,9 @@ test_that("cf_dglm stage_bound keeps the point predictions and gives finite vari
   a <- quiet(cf_dglm(y = st$y, x = st$x, coords = st$coords, time = st$time,
                      x0 = st$x[1:3, , drop = FALSE], coords0 = far_st, time0 = rep(st$nt, 3),
                      mod_hv = hvd, se_type = "mean"))
-  b <- quiet(cf_dglm(y = st$y, x = st$x, coords = st$coords, time = st$time,
+  b <- withr::with_options(list(spcf.stage_bound = FALSE), quiet(cf_dglm(y = st$y, x = st$x, coords = st$coords, time = st$time,
                      x0 = st$x[1:3, , drop = FALSE], coords0 = far_st, time0 = rep(st$nt, 3),
-                     mod_hv = hvd, se_type = "mean", stage_bound = FALSE))
+                     mod_hv = hvd, se_type = "mean")))
   expect_equal(a$pred0$pred, b$pred0$pred)
   expect_true(all(is.finite(a$pred0$pred_sd) & a$pred0$pred_sd > 0))
   expect_true(is.finite(hvd$other$tau_stage) || length(hvd$other$bands) == 0)
@@ -71,8 +71,8 @@ test_that("cf_dglm adds the unmodeled field variance when no scale is accepted",
   h0 <- quiet(cf_dglm_hv(y = y, coords = co, time = tt)); h0$other$bands <- numeric(0)
   m1 <- quiet(cf_dglm(y = y, coords = co, time = tt, coords0 = cs[1:5, ], time0 = rep(nt, 5),
                       mod_hv = h0, se_type = "mean"))
-  m0 <- quiet(cf_dglm(y = y, coords = co, time = tt, coords0 = cs[1:5, ], time0 = rep(nt, 5),
-                      mod_hv = h0, se_type = "mean", stage_bound = FALSE))
+  m0 <- withr::with_options(list(spcf.stage_bound = FALSE), quiet(cf_dglm(y = y, coords = co, time = tt, coords0 = cs[1:5, ], time0 = rep(nt, 5),
+                      mod_hv = h0, se_type = "mean")))
   expect_equal(m1$pred0$pred, m0$pred0$pred)
   expect_true(all(m1$pred0$pred_sd >= m0$pred0$pred_sd))
 })

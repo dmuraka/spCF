@@ -16,10 +16,9 @@ cf_dglm(
   offset0 = NULL,
   mod_hv,
   robust_se = TRUE,
-  sill_cap = TRUE,
-  stage_bound = TRUE,
   se_type = c("prediction", "mean"),
-  se_method = c("opt", "classic")
+  se_method = c("opt", "classic"),
+  keep_scales = TRUE
 )
 }
 \arguments{
@@ -40,14 +39,17 @@ in \code{\link{cf_dglm_hv}}.}
 
 \item{coords0}{Optional. Coordinates at prediction sites (N0 x 2).}
 
-\item{time0}{Optional. Time indices at prediction sites (N0 x 1). May include
-time points with no observations: interior time points absent from the
-training data are interpolated, and time points beyond the last observed one
-are forecast, via the per-knot AR(1) predict step (the Kalman gain is zero
-where a time column carries no data). Such time points are added to the
-working time grid, so predicting at interior gaps slightly re-spaces the
-AR(1) grid; forecasting beyond the last observed point leaves the
-training-time fit unchanged.}
+\item{time0}{Optional. Time points at prediction sites (N0 x 1). May include
+time points with no observations. They are predicted, after the fit and
+without changing it, from the smoothed per-knot AR(1) states: a time point
+between two training time points is bridged between their states, the step
+being split in proportion to the time differences; a time point after (before)
+the training period is forecast (backcast), the number of AR(1) steps being
+the time difference over the median spacing of the training time points. The
+same applies to the time-varying coefficients (random walk). The fit, and
+\code{beta_tv}, therefore do not depend on \code{time0}, and
+\code{\link{predict.cf_dglm}} gives the same predictions for new sites and
+times later.}
 
 \item{offset0}{Optional. Offset at prediction sites (N0 x 1).}
 
@@ -60,36 +62,6 @@ field being a correlated random component. The naive model-based covariance
 treats the field as a known offset and severely understates the SEs; the
 robust version restores near-nominal coverage. Set \code{FALSE} for the
 naive \code{vcov(glm)} SEs.}
-
-\item{sill_cap}{Logical; if \code{TRUE} (default), the field component of the
-predictive variance is capped at the marginal variance of the fitted total
-field (the "sill"), \code{var(sum_r z_r)} on the link scale. This prevents
-the gPoE variance from diverging in deep extrapolation, mirroring a
-stationary GP that reverts to the prior marginal variance far from data. The
-cap is applied to the total field variance (never per scale) and leaves the
-predictive mean, RMSE, and the coefficient-uncertainty term unchanged. It is
-disabled automatically for \code{binomial} responses. Set \code{FALSE} to
-leave the field variance uncapped.}
-
-\item{stage_bound}{Logical; if \code{TRUE} (default), the field variance of
-the mean is assembled scale by scale so that it grows smoothly with the
-distance to the data and reaches the marginal field variance far from it.
-For scale \eqn{r}, \eqn{r_r = V^d_r / P_{0,r}} is the fraction of the scale's
-prior variance left after the data, from a distance-aware gPoE variance
-(each knot informs a site through its kernel correlation \eqn{w}, conditional
-variance \eqn{w^2 P + (1 - w^2) P_0}); the calibrated variance is
-\eqn{c_r \tau r_r / (1 + r_r(\tau - 1))}, where the caps \eqn{c_r} are
-proportional to the variance of each fitted scale and sum to the sill, and
-\eqn{\tau} (\code{mod_hv$other$tau_stage}) scales the information of the data
-and is solved from the holdout moment equation in \code{\link{cf_dglm_hv}}.
-The sill is floored at a direct estimate of the field variance (working
-residual variance of the GLM minus a nearest-neighbour nugget), and when no
-scale is accepted that estimate is added as unmodeled field variance. This
-removes the jump of the variance to the sill at the edge of a fine scale's
-support and keeps the mean intervals from collapsing when the field is
-underfitted. Point predictions and coefficient estimates are unchanged.
-Not used for \code{binomial} or with \code{sill_cap = FALSE}; \code{FALSE}
-restores the total-variance cap of spCF <= 0.2.1.}
 
 \item{se_type}{Type of predictive uncertainty in \code{pred}/\code{pred_q}.
 \code{"prediction"} (default) returns the holdout-calibrated OBSERVATION
@@ -113,6 +85,14 @@ the calibrated field variance back with a within-block \code{exp(-d/h)}
 correlation (\code{h} = median committed bandwidth); this is near-nominal. A refit-free leverage leave-one-out ceiling then caps the field term, preventing over-coverage for count (Poisson) responses while leaving already-calibrated families unchanged.
 \code{"classic"} keeps the realised field inside the working residual (the
 previous behaviour), which is valid but conservative.}
+
+\item{keep_scales}{If \code{TRUE} (default), the scale-wise processes
+\code{Z}, \code{Z_sd}, \code{Z0} and \code{Z0_sd} are kept in the output.
+They hold one column per selected scale for every observation (site x time point), which makes them the
+largest part of the fitted object for large data, and above all for long panels. With \code{FALSE} they are
+dropped (\code{NULL}); predictions, standard errors, \code{sd_summary} and
+the maps of \code{\link{spCFmap}} for the total prediction are unchanged,
+but \code{\link{sp_scalewise}} needs them.}
 }
 \value{
 A list (class \code{"cf_dglm"}) mirroring \code{\link{cf_glm}}:
@@ -121,12 +101,17 @@ A list (class \code{"cf_dglm"}) mirroring \code{\link{cf_glm}}:
   \code{Z0}, \code{Z0_sd}, \code{other}, \code{call}, plus
   \describe{
     \item{beta_tv, beta_tv_sd}{Time-varying coefficients and their standard
-    deviations, one row per time point and one column per covariate named in
+    deviations, one row per training time point and one column per covariate named in
     \code{tvc} (plus a \code{time} column). \code{NULL} when \code{tvc} was
     not used in \code{\link{cf_dglm_hv}}.}
     \item{pred_signal, pred_q_signal}{The signal (mean) predictive kept
     alongside the observation predictive when \code{se_type = "prediction"}.}
   }
+  As in \code{\link{cf_glm}}, the quantile tables \code{pred_q},
+  \code{pred0_q} and \code{pred_q_signal} are not stored but computed on
+  access (at the 15 levels 0.005, 0.025, 0.05, 0.1, ..., 0.9, 0.95, 0.975, 0.995; \code{\link{predict.cf_dglm}} gives other
+  levels), and \code{Z}, \code{Z_sd},
+  \code{Z0}, \code{Z0_sd} are \code{NULL} when \code{keep_scales = FALSE}.
   The temporal parameters of the fitted cascade are in \code{other$rho}
   (AR(1) autocorrelation), \code{other$Q} (innovation variance) and
   \code{other$tau} (holdout-calibrated field-variance factor); the first two
@@ -150,6 +135,25 @@ the GLM working response/weights are refreshed (IRLS folded into the sweep, as
 \code{cf_glm}'s per-band \code{glm()} does), the scale is fit and accumulated,
 and the constant and time-varying coefficients are backfit. (The earlier
 outer-IRLS implementation is archived as \code{cf_dglm_iter} under misc/.)
+
+
+The field variance of the mean is assembled scale by scale so that it grows
+smoothly with the distance to the data and reaches the marginal variance of
+the fitted total field (the sill, \code{var(sum_r z_r)} on the link scale)
+far from it, as a stationary process reverts to its marginal variance. For
+scale \eqn{r}, \eqn{r_r = V^d_r / P_{0,r}} is the fraction of the scale's prior
+variance left after the data, from a distance-aware gPoE variance (each knot
+informs a site through its kernel correlation \eqn{w}, conditional variance
+\eqn{w^2 P + (1 - w^2) P_0}); the calibrated variance is
+\eqn{c_r \tau r_r / (1 + r_r(\tau - 1))}, where the caps \eqn{c_r} are
+proportional to the variance of each fitted scale and sum to the sill, and
+\eqn{\tau} (\code{mod_hv$other$tau_stage}) scales the information of the data
+and is solved from the holdout moment equation in \code{\link{cf_dglm_hv}}.
+The sill is floored at a direct estimate of the field variance (working
+residual variance of the GLM minus a nearest-neighbour nugget), and when no
+scale is accepted that estimate is added as unmodeled field variance. Point
+predictions and coefficient estimates do not depend on these bounds. For
+\code{binomial} responses the field variance is left uncapped.
 }
 \examples{
 ### Monthly PM10 at 63 German background stations, 2001-2005 (the data set
@@ -168,24 +172,36 @@ x      <- data.frame(sin12 = sin(2 * pi * air$month / 12),
 ### Holdout validation optimizing the number of spatial scales
 mod_hv <- cf_dglm_hv(y = air$pm10, x = x, coords = coords, time = air$time)
 
-### Space-time modeling; the 63 stations are also predicted one month beyond
-### the data (time = 61), which the AR(1) predict step turns into a forecast
-uni    <- !duplicated(air$station)
-n0     <- sum(uni)
+### Prediction sites: a regular 25 km grid covering the convex hull of the
+### network (as in the spCF_dglm vignette), at 10 time points every six months
+### over the observed period: June 2001 (time = 6), December 2001 (12), ...,
+### December 2005 (60)
+uni     <- unique(as.data.frame(coords))
+hull    <- st_convex_hull(st_union(st_as_sf(uni, coords = c("X", "Y"))))
+gcen    <- st_make_grid(hull, cellsize = 25000, what = "centers")
+gcen    <- gcen[st_intersects(gcen, hull, sparse = FALSE)[, 1]]
+gxy     <- st_coordinates(gcen)
+ng      <- nrow(gxy)
+tp      <- seq(6, 60, by = 6)
+month0  <- rep(c(6, 12), length.out = length(tp))  # calendar month (June, December)
+coords0 <- do.call(rbind, replicate(length(tp), gxy, simplify = FALSE))
+time0   <- rep(tp, each = ng)
+x0      <- data.frame(sin12 = sin(2 * pi * rep(month0, each = ng) / 12),
+                      cos12 = cos(2 * pi * rep(month0, each = ng) / 12))
+
+### Space-time modeling and prediction
 mod    <- cf_dglm(y = air$pm10, x = x, coords = coords, time = air$time,
-                  x0 = data.frame(sin12 = rep(sin(2 * pi / 12), n0),
-                                  cos12 = rep(cos(2 * pi / 12), n0)),
-                  coords0 = coords[uni, ], time0 = rep(61, n0),
-                  mod_hv = mod_hv)
+                  x0 = x0, coords0 = coords0, time0 = time0, mod_hv = mod_hv)
 mod
 
 round(mod$bands / 1000, 1)              # accepted bandwidths, in km
 round(c(rho = mod$other$rho, Q = mod$other$Q), 3)  # AR(1) parameters
 
-### Mapping the forecast for January 2006 at the station locations
-fc     <- st_as_sf(data.frame(pred = mod$pred0$pred, coords[uni, ]),
-                   coords = c("X", "Y"), crs = 25832)
-plot(fc[, "pred"], pch = 20, cex = 1.3, axes = TRUE, key.pos = 4, nbreaks = 20)
+### Mapping the predictions for June 2005 and December 2005
+grid_sf <- st_sf(Jun2005 = mod$pred0$pred[time0 == 54],
+                 Dec2005 = mod$pred0$pred[time0 == 60],
+                 geometry = gcen, crs = 25832)
+plot(grid_sf, pch = 15, cex = 1.5, axes = TRUE, key.pos = 4, nbreaks = 20)
 
 ### Multiscale extraction, averaged over the observed months
 mod_s1 <- sp_scalewise(mod, bw_range = c(150000, Inf))  # large scale
@@ -194,11 +210,26 @@ mod_s2 <- sp_scalewise(mod, bw_range = c(0, 150000))    # small scale
 ### The same fit, explored interactively over a basemap
 # spCFmap(mod, crs = 25832)
 
+### Prediction with predict(): the model can be fitted WITHOUT prediction
+### sites and times (no x0, coords0, time0) and used to predict at any sites
+### and time points later, without the training data: e.g. the grid in
+### December 2005 (as above) and in March 2006 (time = 63, three months beyond
+### the data), with a 90 percent prediction interval
+mod_f  <- cf_dglm(y = air$pm10, x = x, coords = coords, time = air$time,
+                  mod_hv = mod_hv)                  # no x0, coords0, time0
+p60    <- predict(mod_f, x0 = x0[time0 == 60, ], coords0 = gxy,
+                  time0 = rep(60, ng))
+all.equal(p60$pred, mod$pred0$pred[time0 == 60])   # same as cf_dglm(..., time0)
+p      <- predict(mod_f, x0 = data.frame(sin12 = rep(sin(2 * pi * 3 / 12), ng),
+                                        cos12 = rep(cos(2 * pi * 3 / 12), ng)),
+                  coords0 = gxy, time0 = rep(63, ng), probs = c(0.05, 0.95))
+head(p)
+
 }
 \references{
 Murakami, D. (2026).
 Fast covariance-free spatiotemporal modeling via coarse-to-fine learning.
-*ArXiv preprint*.
+*ArXiv preprint*, 2608.03449.
 }
 \seealso{
 \code{\link{cf_dglm_hv}}, \code{\link{cf_glm}}

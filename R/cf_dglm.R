@@ -27,14 +27,17 @@
 #' @param offset Optional. Offset variable (N x 1), consistent with \code{glm}.
 #' @param x0 Optional. Matrix of covariates at prediction sites (N0 x K).
 #' @param coords0 Optional. Coordinates at prediction sites (N0 x 2).
-#' @param time0 Optional. Time indices at prediction sites (N0 x 1). May include
-#'   time points with no observations: interior time points absent from the
-#'   training data are interpolated, and time points beyond the last observed one
-#'   are forecast, via the per-knot AR(1) predict step (the Kalman gain is zero
-#'   where a time column carries no data). Such time points are added to the
-#'   working time grid, so predicting at interior gaps slightly re-spaces the
-#'   AR(1) grid; forecasting beyond the last observed point leaves the
-#'   training-time fit unchanged.
+#' @param time0 Optional. Time points at prediction sites (N0 x 1). May include
+#'   time points with no observations. They are predicted, after the fit and
+#'   without changing it, from the smoothed per-knot AR(1) states: a time point
+#'   between two training time points is bridged between their states, the step
+#'   being split in proportion to the time differences; a time point after (before)
+#'   the training period is forecast (backcast), the number of AR(1) steps being
+#'   the time difference over the median spacing of the training time points. The
+#'   same applies to the time-varying coefficients (random walk). The fit, and
+#'   \code{beta_tv}, therefore do not depend on \code{time0}, and
+#'   \code{\link{predict.cf_dglm}} gives the same predictions for new sites and
+#'   times later.
 #' @param offset0 Optional. Offset at prediction sites (N0 x 1).
 #' @param mod_hv Output object of \code{\link{cf_dglm_hv}}.
 #' @param robust_se Logical; if \code{TRUE} (default), the constant-coefficient
@@ -44,34 +47,6 @@
 #'   treats the field as a known offset and severely understates the SEs; the
 #'   robust version restores near-nominal coverage. Set \code{FALSE} for the
 #'   naive \code{vcov(glm)} SEs.
-#' @param sill_cap Logical; if \code{TRUE} (default), the field component of the
-#'   predictive variance is capped at the marginal variance of the fitted total
-#'   field (the "sill"), \code{var(sum_r z_r)} on the link scale. This prevents
-#'   the gPoE variance from diverging in deep extrapolation, mirroring a
-#'   stationary GP that reverts to the prior marginal variance far from data. The
-#'   cap is applied to the total field variance (never per scale) and leaves the
-#'   predictive mean, RMSE, and the coefficient-uncertainty term unchanged. It is
-#'   disabled automatically for \code{binomial} responses. Set \code{FALSE} to
-#'   leave the field variance uncapped.
-#' @param stage_bound Logical; if \code{TRUE} (default), the field variance of
-#'   the mean is assembled scale by scale so that it grows smoothly with the
-#'   distance to the data and reaches the marginal field variance far from it.
-#'   For scale \eqn{r}, \eqn{r_r = V^d_r / P_{0,r}} is the fraction of the scale's
-#'   prior variance left after the data, from a distance-aware gPoE variance
-#'   (each knot informs a site through its kernel correlation \eqn{w}, conditional
-#'   variance \eqn{w^2 P + (1 - w^2) P_0}); the calibrated variance is
-#'   \eqn{c_r \tau r_r / (1 + r_r(\tau - 1))}, where the caps \eqn{c_r} are
-#'   proportional to the variance of each fitted scale and sum to the sill, and
-#'   \eqn{\tau} (\code{mod_hv$other$tau_stage}) scales the information of the data
-#'   and is solved from the holdout moment equation in \code{\link{cf_dglm_hv}}.
-#'   The sill is floored at a direct estimate of the field variance (working
-#'   residual variance of the GLM minus a nearest-neighbour nugget), and when no
-#'   scale is accepted that estimate is added as unmodeled field variance. This
-#'   removes the jump of the variance to the sill at the edge of a fine scale's
-#'   support and keeps the mean intervals from collapsing when the field is
-#'   underfitted. Point predictions and coefficient estimates are unchanged.
-#'   Not used for \code{binomial} or with \code{sill_cap = FALSE}; \code{FALSE}
-#'   restores the total-variance cap of spCF <= 0.2.1.
 #' @param se_type Type of predictive uncertainty in \code{pred}/\code{pred_q}.
 #'   \code{"prediction"} (default) returns the holdout-calibrated OBSERVATION
 #'   predictive for a new data point (Gaussian: mean uncertainty + residual
@@ -94,18 +69,50 @@
 #'   \code{"classic"} keeps the realised field inside the working residual (the
 #'   previous behaviour), which is valid but conservative.
 #'
+#' @param keep_scales If \code{TRUE} (default), the scale-wise processes
+#'   \code{Z}, \code{Z_sd}, \code{Z0} and \code{Z0_sd} are kept in the output.
+#'   They hold one column per selected scale for every observation (site x time point), which makes them the
+#'   largest part of the fitted object for large data, and above all for long panels. With \code{FALSE} they are
+#'   dropped (\code{NULL}); predictions, standard errors, \code{sd_summary} and
+#'   the maps of \code{\link{spCFmap}} for the total prediction are unchanged,
+#'   but \code{\link{sp_scalewise}} needs them.
+#'
+#' @details
+#' The field variance of the mean is assembled scale by scale so that it grows
+#' smoothly with the distance to the data and reaches the marginal variance of
+#' the fitted total field (the sill, \code{var(sum_r z_r)} on the link scale)
+#' far from it, as a stationary process reverts to its marginal variance. For
+#' scale \eqn{r}, \eqn{r_r = V^d_r / P_{0,r}} is the fraction of the scale's prior
+#' variance left after the data, from a distance-aware gPoE variance (each knot
+#' informs a site through its kernel correlation \eqn{w}, conditional variance
+#' \eqn{w^2 P + (1 - w^2) P_0}); the calibrated variance is
+#' \eqn{c_r \tau r_r / (1 + r_r(\tau - 1))}, where the caps \eqn{c_r} are
+#' proportional to the variance of each fitted scale and sum to the sill, and
+#' \eqn{\tau} (\code{mod_hv$other$tau_stage}) scales the information of the data
+#' and is solved from the holdout moment equation in \code{\link{cf_dglm_hv}}.
+#' The sill is floored at a direct estimate of the field variance (working
+#' residual variance of the GLM minus a nearest-neighbour nugget), and when no
+#' scale is accepted that estimate is added as unmodeled field variance. Point
+#' predictions and coefficient estimates do not depend on these bounds. For
+#' \code{binomial} responses the field variance is left uncapped.
+#'
 #' @return A list (class \code{"cf_dglm"}) mirroring \code{\link{cf_glm}}:
 #'   \code{beta}, \code{sd_summary}, \code{e_summary}, \code{pred}, \code{pred0},
 #'   \code{pred_q}, \code{pred0_q}, \code{bands}, \code{Z}, \code{Z_sd},
 #'   \code{Z0}, \code{Z0_sd}, \code{other}, \code{call}, plus
 #'   \describe{
 #'     \item{beta_tv, beta_tv_sd}{Time-varying coefficients and their standard
-#'     deviations, one row per time point and one column per covariate named in
+#'     deviations, one row per training time point and one column per covariate named in
 #'     \code{tvc} (plus a \code{time} column). \code{NULL} when \code{tvc} was
 #'     not used in \code{\link{cf_dglm_hv}}.}
 #'     \item{pred_signal, pred_q_signal}{The signal (mean) predictive kept
 #'     alongside the observation predictive when \code{se_type = "prediction"}.}
 #'   }
+#'   As in \code{\link{cf_glm}}, the quantile tables \code{pred_q},
+#'   \code{pred0_q} and \code{pred_q_signal} are not stored but computed on
+#'   access (at the 15 levels 0.005, 0.025, 0.05, 0.1, ..., 0.9, 0.95, 0.975, 0.995; \code{\link{predict.cf_dglm}} gives other
+#'   levels), and \code{Z}, \code{Z_sd},
+#'   \code{Z0}, \code{Z0_sd} are \code{NULL} when \code{keep_scales = FALSE}.
 #'   The temporal parameters of the fitted cascade are in \code{other$rho}
 #'   (AR(1) autocorrelation), \code{other$Q} (innovation variance) and
 #'   \code{other$tau} (holdout-calibrated field-variance factor); the first two
@@ -114,7 +121,7 @@
 #' @references
 #' Murakami, D. (2026).
 #' Fast covariance-free spatiotemporal modeling via coarse-to-fine learning.
-#' *ArXiv preprint*.
+#' *ArXiv preprint*, 2608.03449.
 #'
 #' @seealso \code{\link{cf_dglm_hv}}, \code{\link{cf_glm}}
 #' @author Daisuke Murakami
@@ -136,24 +143,36 @@
 #' ### Holdout validation optimizing the number of spatial scales
 #' mod_hv <- cf_dglm_hv(y = air$pm10, x = x, coords = coords, time = air$time)
 #'
-#' ### Space-time modeling; the 63 stations are also predicted one month beyond
-#' ### the data (time = 61), which the AR(1) predict step turns into a forecast
-#' uni    <- !duplicated(air$station)
-#' n0     <- sum(uni)
+#' ### Prediction sites: a regular 25 km grid covering the convex hull of the
+#' ### network (as in the spCF_dglm vignette), at 10 time points every six months
+#' ### over the observed period: June 2001 (time = 6), December 2001 (12), ...,
+#' ### December 2005 (60)
+#' uni     <- unique(as.data.frame(coords))
+#' hull    <- st_convex_hull(st_union(st_as_sf(uni, coords = c("X", "Y"))))
+#' gcen    <- st_make_grid(hull, cellsize = 25000, what = "centers")
+#' gcen    <- gcen[st_intersects(gcen, hull, sparse = FALSE)[, 1]]
+#' gxy     <- st_coordinates(gcen)
+#' ng      <- nrow(gxy)
+#' tp      <- seq(6, 60, by = 6)
+#' month0  <- rep(c(6, 12), length.out = length(tp))  # calendar month (June, December)
+#' coords0 <- do.call(rbind, replicate(length(tp), gxy, simplify = FALSE))
+#' time0   <- rep(tp, each = ng)
+#' x0      <- data.frame(sin12 = sin(2 * pi * rep(month0, each = ng) / 12),
+#'                       cos12 = cos(2 * pi * rep(month0, each = ng) / 12))
+#'
+#' ### Space-time modeling and prediction
 #' mod    <- cf_dglm(y = air$pm10, x = x, coords = coords, time = air$time,
-#'                   x0 = data.frame(sin12 = rep(sin(2 * pi / 12), n0),
-#'                                   cos12 = rep(cos(2 * pi / 12), n0)),
-#'                   coords0 = coords[uni, ], time0 = rep(61, n0),
-#'                   mod_hv = mod_hv)
+#'                   x0 = x0, coords0 = coords0, time0 = time0, mod_hv = mod_hv)
 #' mod
 #'
 #' round(mod$bands / 1000, 1)              # accepted bandwidths, in km
 #' round(c(rho = mod$other$rho, Q = mod$other$Q), 3)  # AR(1) parameters
 #'
-#' ### Mapping the forecast for January 2006 at the station locations
-#' fc     <- st_as_sf(data.frame(pred = mod$pred0$pred, coords[uni, ]),
-#'                    coords = c("X", "Y"), crs = 25832)
-#' plot(fc[, "pred"], pch = 20, cex = 1.3, axes = TRUE, key.pos = 4, nbreaks = 20)
+#' ### Mapping the predictions for June 2005 and December 2005
+#' grid_sf <- st_sf(Jun2005 = mod$pred0$pred[time0 == 54],
+#'                  Dec2005 = mod$pred0$pred[time0 == 60],
+#'                  geometry = gcen, crs = 25832)
+#' plot(grid_sf, pch = 15, cex = 1.5, axes = TRUE, key.pos = 4, nbreaks = 20)
 #'
 #' ### Multiscale extraction, averaged over the observed months
 #' mod_s1 <- sp_scalewise(mod, bw_range = c(150000, Inf))  # large scale
@@ -162,16 +181,35 @@
 #' ### The same fit, explored interactively over a basemap
 #' # spCFmap(mod, crs = 25832)
 #'
+#' ### Prediction with predict(): the model can be fitted WITHOUT prediction
+#' ### sites and times (no x0, coords0, time0) and used to predict at any sites
+#' ### and time points later, without the training data: e.g. the grid in
+#' ### December 2005 (as above) and in March 2006 (time = 63, three months beyond
+#' ### the data), with a 90 percent prediction interval
+#' mod_f  <- cf_dglm(y = air$pm10, x = x, coords = coords, time = air$time,
+#'                   mod_hv = mod_hv)                  # no x0, coords0, time0
+#' p60    <- predict(mod_f, x0 = x0[time0 == 60, ], coords0 = gxy,
+#'                   time0 = rep(60, ng))
+#' all.equal(p60$pred, mod$pred0$pred[time0 == 60])   # same as cf_dglm(..., time0)
+#' p      <- predict(mod_f, x0 = data.frame(sin12 = rep(sin(2 * pi * 3 / 12), ng),
+#'                                         cos12 = rep(cos(2 * pi * 3 / 12), ng)),
+#'                   coords0 = gxy, time0 = rep(63, ng), probs = c(0.05, 0.95))
+#' head(p)
+#'
 #' @importFrom fields rdist
 #' @importFrom stats glm gaussian predict vcov qnorm sd as.formula glm.fit lm.wfit
 #' @export
 cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
                     x0 = NULL, coords0 = NULL, time0 = NULL, offset0 = NULL,
-                    mod_hv, robust_se = TRUE, sill_cap = TRUE, stage_bound = TRUE,
+                    mod_hv, robust_se = TRUE,
                     se_type = c("prediction", "mean"),
-                    se_method = c("opt", "classic")) {
+                    se_method = c("opt", "classic"), keep_scales = TRUE) {
   se_method <- match.arg(se_method)
   se_type <- match.arg(se_type)
+  ## sill cap and per-stage variance bound (Details); FALSE only through internal
+  ## options, which restore the variance of spCF <= 0.2.1 for comparisons
+  sill_cap    <- isTRUE(getOption("spcf.sill_cap", TRUE))
+  stage_bound <- isTRUE(getOption("spcf.stage_bound", TRUE))
 
   .spcf_check_mod_hv(mod_hv, "cf_dglm_hv", "cf_dglm_hv")
   .spcf_check_data(y = y, x = x, coords = coords, offset = offset, time = time)
@@ -203,6 +241,14 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
       stop("offset0 must be provided when offset is specified")
     if (!is.null(x) && is.null(x0)) stop("x0 must be provided when x is specified")
   }
+  ## The fit itself never uses the prediction sites or times: they are set aside
+  ## here and predicted at the end from the stored knot states (.spcf_dglm_new(),
+  ## the same code as predict.cf_dglm()). Times not in the training data are
+  ## bridged (interior) or forecast from the smoothed states, so the fit does not
+  ## change with time0, and every has0 branch below is inactive.
+  x0_new <- x0; coords0_new <- coords0; time0_new <- time0; offset0_new <- offset0
+  xcols_in <- if (is.null(dim(x))) NULL else colnames(x)    # covariate names for predict()
+  x0 <- coords0 <- time0 <- offset0 <- NULL; has0 <- FALSE
 
   ## working time grid: extend to include any requested prediction times so that
   ## prediction is possible at time points with no observations. Columns absent
@@ -267,7 +313,8 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
       resid <- z - drop(X %*% beta) - tvpart - fobs  # working residual (z is already offset-free)
       Rp <- matrix(NA_real_, nL, nT); Rp[cbind(pn$lk, pn$tk)] <- resid
       Wp <- matrix(NA_real_, nL, nT); Wp[cbind(pn$lk, pn$tk)] <- w
-      sc <- .dglm_scale_apply(setups[[k]], Rp, Wp, rho, Q, predict = predict)
+      sc <- .dglm_scale_apply(setups[[k]], Rp, Wp, rho, Q, predict = predict,
+                              return_state = predict)
       f <- f + sc$Ftr; Ftr_sum <- Ftr_sum + sc$Ftr
       if (has0 && predict) Fpr_sum <- Fpr_sum + sc$Fpr
       sc_list[[k]] <- sc
@@ -324,6 +371,10 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
     ## center each scale to zero mean (folding the bias into the intercept via
     ## the final GLM), as cf_dglm / cf_glm do. Prediction is unchanged.
     zmean <- colMeans(Z); Z <- sweep(Z, 2, zmean)
+    ## knot states of the final sweep, for prediction at new sites and times
+    kstates <- lapply(seq_along(bands), function(k)
+      list(state = sw$scales[[k]]$state, knots = setups[[k]]$knots, band = bands[k],
+           zmean = zmean[k]))
     if (has0) Z0 <- sweep(Z0, 2, zmean)   # center by TRAINING means for consistency
     f_tr <- rowSums(Z); if (has0) f0_obs <- rowSums(Z0)
   }
@@ -334,6 +385,7 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
     dr <- .dglm_dynreg(z - drop(X %*% beta) - f_tr, Xtv, w, pn$tk, nT,
                        q = if (anyNA(q_cur)) NULL else q_cur)
     tvbeta <- dr$beta; tvV <- dr$V; tvpart <- tvpart_of(tvbeta); q_tvc <- dr$q
+    tvf <- list(af = dr$af, Pf = dr$Pf)          # filtered states, for bridging new times
   }
 
   ## ---- final GLM with the cascade field (and the time-varying part) as offset
@@ -435,12 +487,13 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
   pred_lin_sd <- sqrt(pmax(rowSums((Xg %*% Vbeta) * Xg) + tvvar(Xtv, pn$tk) +
                            field_var_cal(Z_sd, Rd), 0))
   pred_sd  <- abs(family$mu.eta(pred_lin)) * pred_lin_sd
-  qs <- c(0.005, 0.025, 0.05, seq(0.1, 0.9, 0.1), 0.95, 0.975, 0.995)
-  pred_q <- data.frame(family$linkinv(pred_lin + outer(pred_lin_sd, qnorm(qs), "*")))
-  names(pred_q) <- paste0("q", qs)
-  pred_ms <- data.frame(pred = pred, pred_sd = pred_sd)
+  ## Quantiles are not stored: .spcf_quantile() rebuilds them from qspec.
+  ## as.numeric(): drop names, which would otherwise become character row names.
+  qspec <- list(probs = .spcf_qs, family = family,
+                lin = as.numeric(pred_lin), lin_sd = as.numeric(pred_lin_sd))
+  pred_ms <- data.frame(pred = as.numeric(pred), pred_sd = as.numeric(pred_sd))
 
-  pred0_ms <- pred0_q <- NULL
+  pred0_ms <- NULL
   if (has0) {
     X0tv    <- X0[, tv_cols, drop = FALSE]
     tvpart0 <- if (has_tv) rowSums(X0tv * tvbeta[pn0$tk, , drop = FALSE]) else rep(0, n0)
@@ -453,9 +506,8 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
     pred0_lin_sd <- sqrt(pmax(rowSums((Xg0 %*% Vbeta) * Xg0) + tvvar(X0tv, pn0$tk) +
                               field_var_cal(Z0_sd, Rd0), 0))
     pred0_sd  <- abs(family$mu.eta(pred0_lin)) * pred0_lin_sd
-    pred0_q <- data.frame(family$linkinv(pred0_lin + outer(pred0_lin_sd, qnorm(qs), "*")))
-    names(pred0_q) <- paste0("q", qs)
-    pred0_ms <- data.frame(pred = pred0, pred_sd = pred0_sd)
+    qspec$lin0 <- as.numeric(pred0_lin); qspec$lin0_sd <- as.numeric(pred0_lin_sd)
+    pred0_ms <- data.frame(pred = as.numeric(pred0), pred_sd = as.numeric(pred0_sd))
   }
 
   ## ---- spatial-process objects (per scale)
@@ -501,7 +553,7 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
   gmod_null <- stats::glm(yt ~ 1, family = family)
   gmod_fix  <- stats::glm(yt ~ 0 + offset(family$linkfun(yp_c)), family = family)
   r2  <- 1 - gmod_fix$deviance / gmod_null$null.deviance
-  rmse <- sqrt(mean((yt - yp)^2)); mae <- abs(mean(yt - yp))
+  rmse <- sqrt(mean((yt - yp)^2)); mae <- mean(abs(yt - yp))
   e_summary <- data.frame(stat = c("validation_Pseudo-R2", "validation_RMSE", "validation_MAE"),
                           value = c(r2, rmse, mae))
 
@@ -513,19 +565,41 @@ cf_dglm <- function(y, x = NULL, coords, time, offset = NULL,
                 time = time, time0 = if (has0) time0 else NULL,
                 x = x, x0 = if (has0) x0 else NULL,
                 time_levels = lev_work, time_levels_train = lev,
-                robust_se = robust_se, se_blocks = G_block, family = family)
+                robust_se = robust_se, se_blocks = G_block, family = family,
+                qspec = qspec, keep_scales = isTRUE(keep_scales))
+  ## keep_scales = FALSE drops the scale-wise processes (observations x scales
+  ## tables); sd_summary above was computed from them before they are dropped
+  if (!isTRUE(keep_scales)) Zdf <- Zsd_df <- Z0df <- Z0sd_df <- NULL
   result <- list(beta = beta_summ, beta_tv = beta_tv, beta_tv_sd = beta_tv_sd,
                  sd_summary = sd_summary, e_summary = e_summary,
-                 pred = pred_ms, pred0 = pred0_ms, pred_q = pred_q, pred0_q = pred0_q,
+                 pred = pred_ms, pred0 = pred0_ms,
                  bands = bands, Z = Zdf, Z_sd = Zsd_df, Z0 = Z0df, Z0_sd = Z0sd_df,
                  other = other, call = match.call())
   if (identical(se_type, "prediction")) {
+    ofam <- .spcf_obs_fam(family, y)
     ob <- tryCatch(.spcf_obs_predict(family = family, y = y, mod_hv = mod_hv,
-                     pred_in = result$pred$pred, predq_in = result$pred_q,
-                     pred_out = result$pred0$pred, predq_out = result$pred0_q),
+                     pred_in = result$pred$pred,
+                     s_in = .spcf_signal_slink(qspec, "sample", family, ofam),
+                     pred_out = result$pred0$pred,
+                     s_out = .spcf_signal_slink(qspec, "prediction", family, ofam)),
                    error = function(e) NULL)
     result <- .spcf_apply_obs(result, ob)
   } else result$other$se_type <- "mean"
+  ## What predict.cf_dglm() needs, without the training data: the knot states of
+  ## the accepted scales (smoothed and filtered, per training time) and the
+  ## parts of the fit that do not depend on the prediction sites or times.
+  result$other$pcore <- list(
+    type = "dglm", kstates = if (length(bands) > 0) kstates else list(), nS = length(bands),
+    kernel = kernel, has_x = !is.null(x), x_sel = if (is.null(x)) NULL else x_sel, xcols = xcols_in, lev = lev, rho = rho, Q = Q,
+    tv_cols = tv_cols, tv = if (has_tv) list(beta = tvbeta, V = tvV, af = tvf$af, Pf = tvf$Pf,
+                                             q = q_tvc) else NULL,
+    const_cov = const_cov, gcoef = stats::coef(gmod), family = family, vmat = Vbeta,
+    stage_on = stage_on, caps = caps, tau_stage = tau_stage, tau = tau, sill = sill,
+    v_unmod = v_unmod)
+  if (!is.null(coords0_new)) {
+    nw     <- .spcf_dglm_new(result$other$pcore, x0_new, coords0_new, time0_new, offset0_new)
+    result <- .spcf_put_new(result, nw, as.matrix(coords0_new))
+  }
   class(result) <- "cf_dglm"
   result
 }

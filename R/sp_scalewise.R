@@ -48,6 +48,9 @@ sp_scalewise      <- function(mod, bw_range=c(0,Inf), time_range=c(-Inf,Inf)){
       "'mod' must be a fitted model from cf_lm(), cf_glm() or cf_dglm(), but an object of class %s was given.",
       paste(sQuote(class(mod)), collapse="/")))
   }
+  if( isFALSE(mod$other$keep_scales) ){
+    .spcf_stop("The scale-wise processes were not kept in this fit (keep_scales = FALSE); refit with keep_scales = TRUE (the default) to use sp_scalewise().")
+  }
   ## bw_range is half-open [min, max), so an empty range is an error; time_range
   ## is closed, and c(t, t) legitimately selects a single time point.
   if( !is.numeric(bw_range) || length(bw_range) != 2L || anyNA(bw_range) ||

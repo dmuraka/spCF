@@ -114,7 +114,7 @@ smoother in time combined with kernel kriging in space.
 \references{
 Murakami, D. (2026).
 Fast covariance-free spatiotemporal modeling via coarse-to-fine learning.
-*ArXiv preprint*.
+*ArXiv preprint*, 2608.03449.
 }
 \seealso{
 \code{\link{cf_dglm}}, \code{\link{cf_glm_hv}}

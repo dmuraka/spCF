@@ -34,6 +34,7 @@
   if(!ncol(P) || top <= 0) return(1)
   if(!is.finite(num) || num <= 0) return(1e-6)
   if(num >= top) return(100)
+  if(g(1e-10) >= num) return(1e-10)   # no sign change at the lower end
   exp(stats::uniroot(function(lt) g(exp(lt)) - num, c(log(1e-10), log(1e10)), tol = 1e-8)$root)
 }
 
@@ -59,5 +60,6 @@
   if(!ncol(R) || top <= 0) return(1)
   if(!is.finite(num) || num <= 0) return(1e-6)
   if(num >= top) return(100)
+  if(g(1e-10) >= num) return(1e-10)   # no sign change at the lower end
   exp(stats::uniroot(function(lt) g(exp(lt)) - num, c(log(1e-10), log(1e10)), tol = 1e-8)$root)
 }

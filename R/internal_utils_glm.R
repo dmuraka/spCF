@@ -120,7 +120,8 @@ initial_fun_glm  <- function(x, y, coords, offset=NULL, x_sel=NULL,
 lwr_glm        <- function(coords, coords_uni,resid, x, w=NULL, offset=NULL,
                            band, b_old, vc, ridge, coords_old=NULL, kernel,
                            id_train,y, coords0=NULL, x0=NULL,
-                           sel_id=NULL, sse_hv0=NULL, l_pred, family, func){
+                           sel_id=NULL, sse_hv0=NULL, l_pred, family, func,
+                           keep_state=FALSE){
 
   n            <- nrow(coords)
   if(is.null(w)){
@@ -208,7 +209,8 @@ lwr_glm        <- function(coords, coords_uni,resid, x, w=NULL, offset=NULL,
     threshold    = threshold,
     is_lm        = 0L,
     coords0_sexp = if(!is.null(coords0)) as.matrix(coords0) else NULL,
-    x0_sexp      = if(!is.null(coords0)) x0 else NULL)
+    x0_sexp      = if(!is.null(coords0)) x0 else NULL,
+    return_state = as.integer(isTRUE(keep_state)))
   b_all        <- fres$b_all
   bv_inv_all   <- fres$bv_inv_all
   pv_inv_all   <- fres$pv_inv_all
@@ -292,7 +294,8 @@ lwr_glm        <- function(coords, coords_uni,resid, x, w=NULL, offset=NULL,
     return(list(beta=b_all, beta_v=bv_all, beta_pv=pv_all, pred=pred, sel_id=sel_id,
                 coords_cent=coords_cent,
                 beta0=b_all0,beta0_v=bv_all0, beta0_pv=pv_all0, pred0=pred0, b_old=b_old,
-                run=run,sse_hv=sse_hv,vc_sel=vc, sse_hv0=sse_hv0))
+                run=run,sse_hv=sse_hv,vc_sel=vc, sse_hv0=sse_hv0,
+                state=.spcf_knot_state(fres$state, coords_cent, vc_int, band, kernel_id, threshold)))
   } else {
     return(list(run=FALSE))
   }

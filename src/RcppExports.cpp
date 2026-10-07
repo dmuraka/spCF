@@ -11,8 +11,8 @@ Rcpp::Rostream<false>& Rcpp::Rcerr = Rcpp::Rcpp_cerr_get();
 #endif
 
 // dglm_scale_chunk
-List dglm_scale_chunk(IntegerVector ptr, IntegerVector idx, NumericVector w, NumericMatrix W0t, NumericMatrix R0t, int K, double rho, double Q, IntegerVector pptr, IntegerVector pidx, NumericVector pw, int n0);
-RcppExport SEXP _spCF_dglm_scale_chunk(SEXP ptrSEXP, SEXP idxSEXP, SEXP wSEXP, SEXP W0tSEXP, SEXP R0tSEXP, SEXP KSEXP, SEXP rhoSEXP, SEXP QSEXP, SEXP pptrSEXP, SEXP pidxSEXP, SEXP pwSEXP, SEXP n0SEXP) {
+List dglm_scale_chunk(IntegerVector ptr, IntegerVector idx, NumericVector w, NumericMatrix W0t, NumericMatrix R0t, int K, double rho, double Q, IntegerVector pptr, IntegerVector pidx, NumericVector pw, int n0, int return_state);
+RcppExport SEXP _spCF_dglm_scale_chunk(SEXP ptrSEXP, SEXP idxSEXP, SEXP wSEXP, SEXP W0tSEXP, SEXP R0tSEXP, SEXP KSEXP, SEXP rhoSEXP, SEXP QSEXP, SEXP pptrSEXP, SEXP pidxSEXP, SEXP pwSEXP, SEXP n0SEXP, SEXP return_stateSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -28,7 +28,27 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< IntegerVector >::type pidx(pidxSEXP);
     Rcpp::traits::input_parameter< NumericVector >::type pw(pwSEXP);
     Rcpp::traits::input_parameter< int >::type n0(n0SEXP);
-    rcpp_result_gen = Rcpp::wrap(dglm_scale_chunk(ptr, idx, w, W0t, R0t, K, rho, Q, pptr, pidx, pw, n0));
+    Rcpp::traits::input_parameter< int >::type return_state(return_stateSEXP);
+    rcpp_result_gen = Rcpp::wrap(dglm_scale_chunk(ptr, idx, w, W0t, R0t, K, rho, Q, pptr, pidx, pw, n0, return_state));
+    return rcpp_result_gen;
+END_RCPP
+}
+// dglm_gpoe_rows
+List dglm_gpoe_rows(IntegerVector ptr, IntegerVector idx, NumericVector w, IntegerVector tcol, NumericMatrix m, NumericMatrix P, NumericMatrix Pv, double P0v, double vmx);
+RcppExport SEXP _spCF_dglm_gpoe_rows(SEXP ptrSEXP, SEXP idxSEXP, SEXP wSEXP, SEXP tcolSEXP, SEXP mSEXP, SEXP PSEXP, SEXP PvSEXP, SEXP P0vSEXP, SEXP vmxSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< IntegerVector >::type ptr(ptrSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type idx(idxSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type w(wSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type tcol(tcolSEXP);
+    Rcpp::traits::input_parameter< NumericMatrix >::type m(mSEXP);
+    Rcpp::traits::input_parameter< NumericMatrix >::type P(PSEXP);
+    Rcpp::traits::input_parameter< NumericMatrix >::type Pv(PvSEXP);
+    Rcpp::traits::input_parameter< double >::type P0v(P0vSEXP);
+    Rcpp::traits::input_parameter< double >::type vmx(vmxSEXP);
+    rcpp_result_gen = Rcpp::wrap(dglm_gpoe_rows(ptr, idx, w, tcol, m, P, Pv, P0v, vmx));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -92,8 +112,8 @@ BEGIN_RCPP
 END_RCPP
 }
 // lwr_glm_fused_cpp
-List lwr_glm_fused_cpp(NumericMatrix coords, NumericMatrix coords_cent, NumericVector resid, NumericVector w_obs, NumericMatrix x, IntegerVector id_train, NumericMatrix B_var, IntegerVector vc_cols, double band, int kernel_id, double threshold, int is_lm, SEXP coords0_sexp, SEXP x0_sexp);
-RcppExport SEXP _spCF_lwr_glm_fused_cpp(SEXP coordsSEXP, SEXP coords_centSEXP, SEXP residSEXP, SEXP w_obsSEXP, SEXP xSEXP, SEXP id_trainSEXP, SEXP B_varSEXP, SEXP vc_colsSEXP, SEXP bandSEXP, SEXP kernel_idSEXP, SEXP thresholdSEXP, SEXP is_lmSEXP, SEXP coords0_sexpSEXP, SEXP x0_sexpSEXP) {
+List lwr_glm_fused_cpp(NumericMatrix coords, NumericMatrix coords_cent, NumericVector resid, NumericVector w_obs, NumericMatrix x, IntegerVector id_train, NumericMatrix B_var, IntegerVector vc_cols, double band, int kernel_id, double threshold, int is_lm, SEXP coords0_sexp, SEXP x0_sexp, int return_state);
+RcppExport SEXP _spCF_lwr_glm_fused_cpp(SEXP coordsSEXP, SEXP coords_centSEXP, SEXP residSEXP, SEXP w_obsSEXP, SEXP xSEXP, SEXP id_trainSEXP, SEXP B_varSEXP, SEXP vc_colsSEXP, SEXP bandSEXP, SEXP kernel_idSEXP, SEXP thresholdSEXP, SEXP is_lmSEXP, SEXP coords0_sexpSEXP, SEXP x0_sexpSEXP, SEXP return_stateSEXP) {
 BEGIN_RCPP
     Rcpp::RObject rcpp_result_gen;
     Rcpp::RNGScope rcpp_rngScope_gen;
@@ -111,7 +131,29 @@ BEGIN_RCPP
     Rcpp::traits::input_parameter< int >::type is_lm(is_lmSEXP);
     Rcpp::traits::input_parameter< SEXP >::type coords0_sexp(coords0_sexpSEXP);
     Rcpp::traits::input_parameter< SEXP >::type x0_sexp(x0_sexpSEXP);
-    rcpp_result_gen = Rcpp::wrap(lwr_glm_fused_cpp(coords, coords_cent, resid, w_obs, x, id_train, B_var, vc_cols, band, kernel_id, threshold, is_lm, coords0_sexp, x0_sexp));
+    Rcpp::traits::input_parameter< int >::type return_state(return_stateSEXP);
+    rcpp_result_gen = Rcpp::wrap(lwr_glm_fused_cpp(coords, coords_cent, resid, w_obs, x, id_train, B_var, vc_cols, band, kernel_id, threshold, is_lm, coords0_sexp, x0_sexp, return_state));
+    return rcpp_result_gen;
+END_RCPP
+}
+// lwr_scatter0_cpp
+List lwr_scatter0_cpp(NumericMatrix coords_cent, NumericVector iw, NumericMatrix b, NumericMatrix ibv, NumericMatrix sig, IntegerVector vc_cols, NumericMatrix coords0, NumericMatrix x0, double band, int kernel_id, double threshold);
+RcppExport SEXP _spCF_lwr_scatter0_cpp(SEXP coords_centSEXP, SEXP iwSEXP, SEXP bSEXP, SEXP ibvSEXP, SEXP sigSEXP, SEXP vc_colsSEXP, SEXP coords0SEXP, SEXP x0SEXP, SEXP bandSEXP, SEXP kernel_idSEXP, SEXP thresholdSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< NumericMatrix >::type coords_cent(coords_centSEXP);
+    Rcpp::traits::input_parameter< NumericVector >::type iw(iwSEXP);
+    Rcpp::traits::input_parameter< NumericMatrix >::type b(bSEXP);
+    Rcpp::traits::input_parameter< NumericMatrix >::type ibv(ibvSEXP);
+    Rcpp::traits::input_parameter< NumericMatrix >::type sig(sigSEXP);
+    Rcpp::traits::input_parameter< IntegerVector >::type vc_cols(vc_colsSEXP);
+    Rcpp::traits::input_parameter< NumericMatrix >::type coords0(coords0SEXP);
+    Rcpp::traits::input_parameter< NumericMatrix >::type x0(x0SEXP);
+    Rcpp::traits::input_parameter< double >::type band(bandSEXP);
+    Rcpp::traits::input_parameter< int >::type kernel_id(kernel_idSEXP);
+    Rcpp::traits::input_parameter< double >::type threshold(thresholdSEXP);
+    rcpp_result_gen = Rcpp::wrap(lwr_scatter0_cpp(coords_cent, iw, b, ibv, sig, vc_cols, coords0, x0, band, kernel_id, threshold));
     return rcpp_result_gen;
 END_RCPP
 }
@@ -145,10 +187,12 @@ END_RCPP
 }
 
 static const R_CallMethodDef CallEntries[] = {
-    {"_spCF_dglm_scale_chunk", (DL_FUNC) &_spCF_dglm_scale_chunk, 12},
+    {"_spCF_dglm_scale_chunk", (DL_FUNC) &_spCF_dglm_scale_chunk, 13},
+    {"_spCF_dglm_gpoe_rows", (DL_FUNC) &_spCF_dglm_gpoe_rows, 9},
     {"_spCF_lwr_chunk_cpp", (DL_FUNC) &_spCF_lwr_chunk_cpp, 20},
     {"_spCF_lwr_chunk_glm_cpp", (DL_FUNC) &_spCF_lwr_chunk_glm_cpp, 21},
-    {"_spCF_lwr_glm_fused_cpp", (DL_FUNC) &_spCF_lwr_glm_fused_cpp, 14},
+    {"_spCF_lwr_glm_fused_cpp", (DL_FUNC) &_spCF_lwr_glm_fused_cpp, 15},
+    {"_spCF_lwr_scatter0_cpp", (DL_FUNC) &_spCF_lwr_scatter0_cpp, 11},
     {"_spCF_lwr_ds_chunk_cpp", (DL_FUNC) &_spCF_lwr_ds_chunk_cpp, 19},
     {NULL, NULL, 0}
 };

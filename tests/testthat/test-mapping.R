@@ -173,3 +173,21 @@ test_that("a fit with no stored covariates refuses to draw a covariate effect", 
   expect_true(all(is.finite(d0$z)))
   expect_equal(diff(range(d0$z)), 0)
 })
+
+test_that("irregular sites with integer coordinates are not taken for a lattice", {
+  skip_if_no_map()
+  ## integer-metre coordinates let terra build a 1 m raster in which every site
+  ## is an invisible pixel; such sites must be filled from the nearest site
+  set.seed(3)
+  co <- data.frame(px = round(runif(150, 0, 3000)), py = round(runif(150, 0, 3000)))
+  y  <- sin(co$px / 800) + rnorm(150, sd = 0.2)
+  hv <- quiet(cf_lm_hv(y = y, coords = co))
+  m  <- quiet(cf_lm(y = y, coords = co, mod_hv = hv))
+  r  <- spCF:::.sp_raster(m, "pred", "EPSG:3857")
+  v  <- terra::values(r)[, 1]
+  expect_gt(mean(!is.na(v)), 0.2)                          # a visible surface
+  expect_true(all(!is.na(v[terra::cellFromXY(r, as.matrix(co))])))   # every site drawn
+  ## and nothing far from the sites: the corners of the padded box stay blank
+  expect_lt(mean(!is.na(v)), 0.95)
+})
+
