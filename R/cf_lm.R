@@ -23,9 +23,30 @@
 #'   \code{robust_se = TRUE}). \code{"opt"} (default) splits the sandwich
 #'   meat into a field-removed observation-noise part and a field part that adds
 #'   the calibrated field variance back with a within-block \code{exp(-d/h)}
-#'   correlation (\code{h} = median committed bandwidth); this is near-nominal. A refit-free leverage leave-one-out ceiling then caps the field term, preventing over-coverage for count (Poisson) responses while leaving already-calibrated families unchanged.
+#'   correlation (\code{h} = median committed bandwidth); this is near-nominal.
+#'   For \code{cf_lm} the noise part is rescaled to a nugget (observation-noise
+#'   variance) estimated from nearest-neighbour differences of the fixed-effect
+#'   residuals, because the in-sample residual is shrunk by the fitted field. A refit-free leverage leave-one-out ceiling then caps the field term, preventing over-coverage for count (Poisson) responses while leaving already-calibrated families unchanged.
 #'   \code{"classic"} keeps the realised field inside the working residual (the
 #'   previous behaviour), which is valid but conservative.
+#'
+#' @param keep_scales If \code{TRUE} (default), the scale-wise processes
+#'   \code{Z}, \code{Z_sd}, \code{Z0} and \code{Z0_sd} are kept in the output.
+#'   They hold one column per selected scale for every sample (and prediction) site, which makes them the
+#'   largest part of the fitted object for large data. With \code{FALSE} they are
+#'   dropped (\code{NULL}); predictions, standard errors, \code{sd_summary} and
+#'   the maps of \code{\link{spCFmap}} for the total prediction are unchanged,
+#'   but \code{\link{sp_scalewise}} needs them.
+#'
+#' @details
+#' The spatial-process predictive variance is bounded stage by stage: the
+#' calibrated variance of stage \eqn{r} is \eqn{\min(\tau\, pv_r, \kappa s_r^2)},
+#' where \eqn{pv_r} is the stage's predictive variance (infinite where no knot
+#' with data reaches the site), \eqn{s_r^2} the variance of the stage's fitted
+#' field over the sample sites, and \eqn{\kappa} rescales the caps to sum to the
+#' marginal field variance. The holdout factor \eqn{\tau} solves the
+#' corresponding moment equation. The predictive SD thus grows smoothly with the
+#' distance to the data and reaches the marginal field variance far from it.
 #'
 #' @return A list with the following elements:
 #' \describe{
@@ -37,7 +58,9 @@
 #'   `none`), and residuals.}
 #'   \item{e_summary}{Holdout validation accuracy evaluated on the validation
 #'   samples: R-squared (validation_R2), root mean squared error
-#'   (validation_RMSE), and mean absolute error (validation_MAE).}
+#'   (validation_RMSE), and mean absolute error (validation_MAE).
+#'   validation_R2 is NA when the holdout predictions are constant (no
+#'   covariates and no accepted scale).}
 #'   \item{pred}{Predictive means and standard deviations (sample sites). When
 #'   no additional learner is active, the spatial-process contribution to the
 #'   predictive SD is rescaled by a holdout-calibrated factor (stored as
@@ -50,7 +73,9 @@
 #'   regression (CQR) on the validation samples; otherwise the quantiles are
 #'   Gaussian about the predictive mean using the (tau-calibrated)
 #'   \code{pred_sd}. \code{pred_sd} is a Gaussian-equivalent summary of these
-#'   quantiles.}
+#'   quantiles. Not stored in the object: \code{mod$pred_q} computes it on
+#'   access, at the 15 levels 0.005, 0.025, 0.05, 0.1, ..., 0.9, 0.95, 0.975, 0.995;
+#'   \code{\link{predict.cf_lm}} gives them at other levels and at new sites.}
 #'   \item{pred0_q}{Predictive quantiles at the prediction sites; identical
 #'   column structure to \code{pred_q}. \code{NULL} when prediction sites are
 #'   not supplied.}
@@ -63,7 +88,9 @@
 #'   \item{Z0}{Predictive mean of the spatial process at each scale
 #'   (prediction sites; list).}
 #'   \item{Z0_sd}{Predictive standard deviation of the spatial process
-#'   at each bandwidth (prediction sites; list).}
+#'   at each bandwidth (prediction sites; list). \code{Z}, \code{Z_sd},
+#'   \code{Z0} and \code{Z0_sd} are \code{NULL} when
+#'   \code{keep_scales = FALSE}.}
 #'   \item{other}{Other internally used output objects.}
 #' }
 #'
@@ -129,6 +156,15 @@
 #' ### The same fit, explored interactively over a basemap
 #' # spCFmap(mod, crs = 28992)   # crs = the system the coordinates are in
 #'
+#' ### Prediction with predict(): the model can be fitted WITHOUT prediction
+#' ### sites (no x0, coords0) and used to predict at any sites later; the
+#' ### training data are not needed then
+#' mod_f    <- cf_lm(y = y, x = x, coords = coords, mod_hv = mod_hv)  # no x0, coords0
+#' p        <- predict(mod_f, x0 = x0, coords0 = coords0, probs = c(0.025, 0.975))
+#' head(p)                                   # pred, pred_sd, q0.025, q0.975
+#' all.equal(p$pred, mod$pred0$pred)         # same as cf_lm(..., coords0 = coords0)
+#' head(predict(mod_f, probs = c(0.1, 0.9))) # sample sites, 80 percent interval
+#'
 #' @author Daisuke Murakami
 #'
 #' @importFrom dbscan frNN
@@ -141,8 +177,11 @@
 #' @export
 cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
                          robust_se=TRUE, se_type=c("prediction","mean"),
-                         se_method=c("opt","classic")){
+                         se_method=c("opt","classic"), keep_scales=TRUE){
   se_type      <- match.arg(se_type)
+  ## per-stage variance bound (Details); FALSE only through an internal option,
+  ## which restores the variance of spCF <= 0.2.1 for comparisons
+  stage_bound  <- isTRUE(getOption("spcf.stage_bound", TRUE))
   se_method    <- match.arg(se_method)
 
   .spcf_check_mod_hv(mod_hv, "cf_lm_hv", "cf_lm_hv")
@@ -152,6 +191,12 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
   if(!is.null(coords0) && !is.null(x) && is.null(x0)){
     .spcf_stop("'x0' must be provided when 'x' is specified: the prediction sites need the same covariates.")
   }
+  ## The fit itself never uses the prediction sites: they are set aside here and
+  ## predicted at the end from the stored knot states (.spcf_lm_new(), the same
+  ## code as predict.cf_lm()), so every coords0 branch below is inactive.
+  x0_new         <- x0; coords0_new <- coords0
+  xcols_in       <- if(is.null(dim(x))) NULL else colnames(x)   # covariate names for predict()
+  x0             <- coords0 <- NULL
 
   bands          <- mod_hv$other$bands
   bands_all      <- mod_hv$other$bands_all
@@ -205,6 +250,7 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
   bands_scale    <- which(mod_hv$other$VCmat[,1]==1)
 
   b_old          <- NULL
+  scales         <- list()
   Z    <- Z_sd   <- matrix(0,nrow=n ,ncol=length(bands))
   Z_pv           <- matrix(0,nrow=n ,ncol=length(bands))   # eq.(10) predictive var (diag)
   if(!is.null(bands)){
@@ -213,7 +259,7 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
       lmod         <- lwr(coords=coords, coords_uni=coords_uni, resid=resid, x=x,
                           band=bands_all[i],b_old=b_old, vc=vc, id_train=id_train,
                           ridge=ridge,kernel=kernel,x0=x0, coords0=coords0,
-                          sel_id=sel_id_list[[i]], func="cf_lm")
+                          sel_id=sel_id_list[[i]], func="cf_lm", keep_state=TRUE)
       b_old        <- lmod$b_old
       if(length(vc)>0){
         beta_add     <- lmod$beta
@@ -231,8 +277,10 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
         beta_add_m   <- colMeans(beta_add)
         Z[,ii]        <- beta_add[,1]-beta_add_m[1]#sweep(beta_add, 2, beta_add_m, "-")
         Z_sd[,ii]     <- sqrt(beta_v_add[,1])
-        bpv           <- lmod$beta_pv[,1]; bpv[!is.finite(bpv)] <- 0
+        bpv           <- lmod$beta_pv[,1]; bpv[!is.finite(bpv)] <- if(stage_bound) Inf else 0
         Z_pv[,ii]     <- sqrt(bpv)
+        if(length(ii) == 1L)                        # knot state for prediction at new sites
+          scales[[length(scales)+1]] <- list(state=lmod$state, ii=ii, zshift=beta_add_m[1])
         beta_int     <- beta_int + beta_int_add + beta_add_m
         if(!is.null(coords0)){
           beta0_add     <- lmod$beta0
@@ -245,7 +293,7 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
 
           Z0[,ii]       <- beta0_add[,1]-beta_add_m[1]#sweep(beta0_add, 2, beta_add_m, "-")
           Z0_sd[,ii]    <- sqrt(beta0_v_add[,1])
-          b0pv          <- lmod$beta0_pv[,1]; b0pv[!is.finite(b0pv)] <- 0
+          b0pv          <- lmod$beta0_pv[,1]; b0pv[!is.finite(b0pv)] <- if(stage_bound) Inf else 0
           Z0_pv[,ii]    <- sqrt(b0pv)
         }
         comment         <- ""
@@ -273,6 +321,7 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
 
   ##################### tuning
   beta           <- matrix(beta_int[,1], nrow = n, ncol = nx, byrow = TRUE)
+  beta_int_new0  <- beta_int[,1]                   # coefficients used at new sites
   if(!is.null(coords0)){
     beta0        <- matrix(beta_int[,1], nrow=n0,ncol=nx, byrow=TRUE)
   }
@@ -339,6 +388,10 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
   ## far too low. The total-field marginal variance is the correct ceiling.
   sill           <- as.numeric(var(rowSums(Z)))          # marginal field variance ceiling
   if(!is.finite(sill) || sill <= 0) sill <- Inf
+  ## The per-scale cap fails when each scale is capped by its own var(Z[,k]);
+  ## the default per-stage bound rescales the caps to sum to the sill and applies
+  ## tau before the cap (internal_stage_var.R).
+  caps           <- if(stage_bound) .spcf_stage_caps(Z, sill) else NULL
   qlev_out       <- c(0.005, 0.025, 0.05, seq(0.1, 0.9, 0.1), 0.95, 0.975, 0.995)
   qn_hi          <- qnorm(qlev_out[length(qlev_out)])
   if(!is.null(coords0)){
@@ -359,30 +412,45 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
     sig2         <- mean((y[idt] - pred[idt])^2)            # in-sample noise floor
     e2           <- (y[val] - ph[val])^2                    # holdout squared error
     fv           <- field_var[val]
-    okv          <- is.finite(e2) & is.finite(fv) & fv > 0
+    okv          <- is.finite(e2) & (stage_bound | (is.finite(fv) & fv > 0))
     if(sum(okv) >= 2){
       verr       <- mean(e2[okv]); vfld <- mean(fv[okv])
       num        <- verr - sig2
       se         <- sqrt(2 / sum(okv)) * verr
       rel        <- if(num > 0 && is.finite(se) && se > 0) num^2 / (num^2 + se^2) else 0
-      tau_raw    <- if(vfld > 0) max(num, 1e-6) / vfld else 1
+      tau_raw    <- if(stage_bound) .spcf_stage_tau_raw(Z_pv[val, , drop=FALSE][okv, , drop=FALSE], caps, num)
+                    else if(vfld > 0) max(num, 1e-6) / vfld else 1
       tau        <- min(max(exp(log(tau_raw) * rel), 1e-2), 1e2)
       if(!is.finite(tau)) tau <- 1
     }
   }
-  ## calibrated, sill-capped spatial-process predictive variance (total ceiling)
-  fv_cal         <- pmin(tau * field_var, sill)
-  fv0_cal        <- if(!is.null(coords0)) pmin(tau * field_var0, sill) else NULL
+  ## calibrated spatial-process predictive variance: per-stage bound (default,
+  ## internal_stage_var.R; the stage caps sum to the sill) or the total
+  ## tau-scaled variance capped at the sill (stage_bound = FALSE)
+  if(stage_bound){
+    Vst          <- .spcf_stage_var(Z_pv, caps, tau)
+    fv_cal       <- rowSums(Vst)
+    Vst0         <- if(!is.null(coords0)) .spcf_stage_var(Z0_pv, caps, tau) else NULL
+    fv0_cal      <- if(!is.null(coords0)) rowSums(Vst0) else NULL
+  } else {
+    fv_cal       <- pmin(tau * field_var, sill)
+    fv0_cal      <- if(!is.null(coords0)) pmin(tau * field_var0, sill) else NULL
+  }
 
   ## Reported per-scale Z_sd / Z0_sd (used by sp_scalewise) are the pv per-scale
   ## variances scaled proportionally so rowSums(Z_sd^2) == fv_cal, sharing the
   ## same pv/tau/sill footing as pred_sd. The bv-based Z_sd used earlier for the
   ## GLS coefficient covariance is untouched.
-  sf_pt          <- sqrt(ifelse(field_var > 0, fv_cal / field_var, 1))
-  Z_sd           <- Z_pv * sf_pt
-  if(!is.null(coords0)){
-    sf0_pt       <- sqrt(ifelse(field_var0 > 0, fv0_cal / field_var0, 1))
-    Z0_sd        <- Z0_pv * sf0_pt
+  if(stage_bound){
+    Z_sd         <- sqrt(Vst)
+    if(!is.null(coords0)) Z0_sd <- sqrt(Vst0)
+  } else {
+    sf_pt        <- sqrt(ifelse(field_var > 0, fv_cal / field_var, 1))
+    Z_sd         <- Z_pv * sf_pt
+    if(!is.null(coords0)){
+      sf0_pt     <- sqrt(ifelse(field_var0 > 0, fv0_cal / field_var0, 1))
+      Z0_sd      <- Z0_pv * sf0_pt
+    }
   }
 
   ## opt+field coefficient covariance (default se_method): recomputed here, once
@@ -392,7 +460,8 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
   if(robust_se && se_method=="opt" && n_bid>0 && exists("b")){
     ofse <- tryCatch(.spcf_optfield_SE(y=y, X=x, beta=beta_int, field=b,
                                        s_f=sqrt(fv_cal), offset=NULL,
-                                       family=gaussian(), coords=coords, bands=bands),
+                                       family=gaussian(), coords=coords, bands=bands,
+                                       noise_var=.spcf_nugget_nn(y, x, coords)),
                      error=function(e) NULL)
     if(!is.null(ofse) && all(is.finite(diag(ofse$V))) && all(diag(ofse$V) > 0)){
       beta_int_vmat <- ofse$V
@@ -405,7 +474,9 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
     }
   }
 
-  pred_q <- pred0_q <- NULL
+  ## Quantiles are not stored: .spcf_quantile() rebuilds them from qspec (the
+  ## Gaussian mean and SD, or the CQR-calibrated table with an additional learner).
+  qspec  <- list(probs = qlev_out, family = stats::gaussian())
   if(a_run){
     ## ---- Total CQR (rf/lightgbm): calibrate the combined (core +
     ## additional-learning) predictive distribution. Total quantiles are
@@ -423,31 +494,30 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
       off        <- cqr_offsets(Qcal, y[val], qlev_out)
       Qtot       <- apply_cqr(Qtot, qlev_out, off)
     }
-    pred_q       <- as.data.frame(Qtot); names(pred_q) <- paste0("q", qlev_out)
+    qspec$stored <- TRUE; qspec$q <- unname(Qtot)
     pred_sd      <- (Qtot[, length(qlev_out)] - Qtot[, 1]) / (2 * qn_hi)
     if(!is.null(coords0)){
       Qtot0      <- total_qmat(pred0, sqrt(coef_var0 + fv0_cal),
                                a_mod$qmat0, a_mod$qlevels, qlev_out)
       if(!is.null(off)) Qtot0 <- apply_cqr(Qtot0, qlev_out, off)
-      pred0_q    <- as.data.frame(Qtot0); names(pred0_q) <- paste0("q", qlev_out)
+      qspec$q0   <- unname(Qtot0)
       pred0_sd   <- (Qtot0[, length(qlev_out)] - Qtot0[, 1]) / (2 * qn_hi)
     }
 
   } else {
     pred_sd      <- sqrt(coef_var + fv_cal)
-    pred_q       <- as.data.frame(pred + outer(pred_sd, qnorm(qlev_out)))
-    names(pred_q)<- paste0("q", qlev_out)
+    qspec$lin    <- as.numeric(pred); qspec$lin_sd <- as.numeric(pred_sd)
     if(!is.null(coords0)){
       pred0_sd   <- sqrt(coef_var0 + fv0_cal)
-      pred0_q    <- as.data.frame(pred0 + outer(pred0_sd, qnorm(qlev_out)))
-      names(pred0_q) <- paste0("q", qlev_out)
+      qspec$lin0 <- as.numeric(pred0); qspec$lin0_sd <- as.numeric(pred0_sd)
     }
   }
 
-  pred_ms        <- data.frame( pred, pred_sd )
+  ## as.numeric(): drop names, which would otherwise become character row names
+  pred_ms        <- data.frame( pred=as.numeric(pred), pred_sd=as.numeric(pred_sd) )
   pred0_ms       <- NULL
   if(!is.null(coords0)){
-    pred0_ms     <- data.frame( pred=pred0, pred_sd=pred0_sd )
+    pred0_ms     <- data.frame( pred=as.numeric(pred0), pred_sd=as.numeric(pred0_sd) )
   }
 
   ######### spatial process
@@ -490,7 +560,9 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
   pred_hv        <- mod_hv$other$pred_hv
   r2 <- rmse <- mae <- NA_real_
   if(length(ival) >= 2 && !is.null(pred_hv)){
-    r2           <- cor(y[ival], pred_hv[ival])^2
+    ## constant predictions (no covariates, no accepted scale): R2 undefined
+    if(sd(y[ival]) > 0 && sd(pred_hv[ival]) > 0)
+      r2         <- cor(y[ival], pred_hv[ival])^2
     rmse         <- sqrt(mod_hv$sse_hv/length(ival))
     mae          <- mean(abs(y[ival] - pred_hv[ival]))
   }
@@ -503,19 +575,38 @@ cf_lm        <- function(y, x=NULL, coords, x0=NULL, coords0=NULL, mod_hv,
                          coords=coords,coords0=coords0,vpar=vpar,
                          vc=mod_hv$other$vc, xx_inv=xx_inv, a_mod=a_mod,
                          pred_pre=pred_pre, sse_hv=mod_hv$sse_hv, tau=tau,
-                         Z_pv=Z_pv, Z0_pv=Z0_pv)
+                         Z_pv=Z_pv, Z0_pv=Z0_pv, qspec=qspec,
+                         keep_scales=isTRUE(keep_scales))
+  ## keep_scales = FALSE drops the scale-wise processes (n x scales tables);
+  ## sd_summary above was computed from them before they are dropped
+  if(!isTRUE(keep_scales)) Z <- Z_sd <- Z0 <- Z0_sd <- other$Z_pv <- other$Z0_pv <- NULL
   result         <- list(beta=beta_int_summ, sd_summary=sd_summary,
                          e_summary=e_summary, pred=pred_ms,pred0=pred0_ms,
-                         pred_q=pred_q, pred0_q=pred0_q, bands=bands,
+                         bands=bands,
                          Z=Z,Z_sd=Z_sd, Z0=Z0, Z0_sd=Z0_sd, other=other,
                          call = match.call() )
   if(identical(se_type,"prediction")){
-    ob <- tryCatch(.spcf_obs_predict(family=stats::gaussian(), y=y, mod_hv=mod_hv,
-                     pred_in=result$pred$pred, predq_in=result$pred_q,
-                     pred_out=result$pred0$pred, predq_out=result$pred0_q),
+    gfam <- stats::gaussian()
+    ob <- tryCatch(.spcf_obs_predict(family=gfam, y=y, mod_hv=mod_hv,
+                     pred_in=result$pred$pred,
+                     s_in=.spcf_signal_slink(qspec, "sample", gfam, "gaussian"),
+                     pred_out=result$pred0$pred,
+                     s_out=.spcf_signal_slink(qspec, "prediction", gfam, "gaussian")),
                    error=function(e) NULL)
     result <- .spcf_apply_obs(result, ob)
   } else result$other$se_type <- "mean"
+  ## What predict.cf_lm() needs, without the training data: the knot states of
+  ## the accepted scales and the parts of the fit that do not depend on the
+  ## prediction sites. The prediction sites of this call are filled in from it.
+  result$other$pcore <- list(type="lm", scales=scales, nS=length(bands), x_sel=x_sel, xcols=xcols_in,
+                             nx=nx, beta_int=beta_int_new0,
+                             w=if(n_bid>0) as.numeric(w) else NULL, vmat=beta_int_vmat,
+                             stage_bound=stage_bound, caps=caps, tau=tau, sill=sill,
+                             a_run=a_run, qlev=qlev_out, cqr_off=if(a_run) off else NULL)
+  if(!is.null(coords0_new)){
+    nw     <- .spcf_lm_new(result$other$pcore, x0_new, coords0_new, a_mod=a_mod)
+    result <- .spcf_put_new(result, nw, coords0_new)
+  }
   class( result ) <- "cf_lm"
   return( result )
 }

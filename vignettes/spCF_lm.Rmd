@@ -136,6 +136,25 @@ plot(meuse.grid_sf[,"pred_sd"], pal = function(n) hcl.colors(n, "Viridis"), bord
 
 As expected, the standard deviation, which quantifies prediction uncertainty, increases in the east-central region where sample sites are relatively sparse.
 
+### Prediction at new sites with `predict()`
+
+The prediction sites need not be given when the model is fitted. The model can be fitted at the sample sites only, without `x0` and `coords0`, and `predict()` then predicts at any sites later from the fitted object alone; the training data are not needed. The result is identical to giving the same sites as `coords0` in `cf_lm()`:
+
+```{r, eval = FALSE}
+mod_f <- cf_lm(y = y, x = x, coords = coords, mod_hv = mod_hv)   # no x0, coords0
+p     <- predict(mod_f, x0 = x0, coords0 = coords0, probs = c(0.025, 0.975))
+```
+
+`mod` above was fitted to the same data, so `predict()` can be applied to it as well, which avoids refitting here; its predictions equal `mod$pred0`:
+
+```{r}
+p <- predict(mod, x0 = x0, coords0 = coords0, probs = c(0.025, 0.975))
+head(p)
+all.equal(p$pred, mod$pred0$pred)
+```
+
+`predict()` returns the predictive mean (`pred`), the predictive standard deviation (`pred_sd`) and the predictive quantiles at the levels in `probs`. Without `coords0` it returns them at the sample sites, and `se_type = "mean"` gives the predictive distribution of the mean instead of that of a new observation. `mod$pred_q` and `mod$pred0_q` give the quantiles at the sample and prediction sites at the fixed levels 0.005, 0.025, 0.05, 0.1, ..., 0.9, 0.95, 0.975, 0.995. They are computed when accessed rather than stored, which keeps the fitted object small for large data.
+
 ### Multiscale spatial pattern/feature extraction
 
 The `sp_scalewise` function extracts scalewise spatial processes with bandwidth values falling within a pre-specified range. For example, the following commands extract the large-, moderate-, and small-scale processes, corresponding to bandwidth ranges of 1000+, 500–1000, and 0–500, respectively.

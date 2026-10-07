@@ -18,3 +18,7 @@
 ^LICENSE$
 ^\.gitignore$
 ^\.github$
+
+# CRAN submission notes
+^cran-comments\.md$
+^CRAN-SUBMISSION$

@@ -239,7 +239,7 @@
 ## end with predict = TRUE.
 #' @keywords internal
 #' @noRd
-.dglm_scale_apply <- function(su, Rtr, Wtr, rho, Q, predict = TRUE) {
+.dglm_scale_apply <- function(su, Rtr, Wtr, rho, Q, predict = TRUE, return_state = FALSE) {
   W0 <- Wtr; W0[is.na(W0)] <- 0
   R0 <- Rtr; R0[is.na(R0)] <- 0
   use_pr <- predict && su$n0 > 0
@@ -247,9 +247,10 @@
   n0 <- if (use_pr) su$n0 else 0L
   ## panels passed time-major (t() -> nT x nL) so the C++ inner t-loop is contiguous
   res <- dglm_scale_chunk(su$nb$ptr, su$nb$idx, su$nb$w, t(W0), t(R0), su$K, rho, Q,
-                          pb$ptr, pb$idx, pb$w, n0)
-  out <- list(Ftr = res$Ftr, Vtr = res$Vtr, peeled = Rtr - res$Ftr, knots = su$knots)
-  if (n0 > 0) { out$Fpr <- res$Fpr; out$Vpr <- res$Vpr }
+                          pb$ptr, pb$idx, pb$w, n0, as.integer(isTRUE(return_state)))
+  out <- list(Ftr = res$Ftr, Vtr = res$Vtr, Vtr_d = res$Vtr_d, P0 = res$P0,
+              peeled = Rtr - res$Ftr, knots = su$knots, state = res$state)
+  if (n0 > 0) { out$Fpr <- res$Fpr; out$Vpr <- res$Vpr; out$Vpr_d <- res$Vpr_d }
   out
 }
 
@@ -321,7 +322,7 @@
       as[[t]] <- a_f[[t]] + drop(G %*% (as[[t + 1]] - a_p[[t + 1]]))
       Ps[[t]] <- P_f[[t]] + G %*% (Ps[[t + 1]] - P_p[[t + 1]]) %*% t(G)
     }
-    list(a = as, P = Ps)
+    list(a = as, P = Ps, af = a_f, Pf = P_f)
   }
   if (is.null(q)) {
     ## per-coefficient drift estimated by d-dimensional ML of the log-drift; if
@@ -338,7 +339,7 @@
   }
   sm   <- run(q, smooth = TRUE)
   beta <- matrix(unlist(sm$a), nrow = nT, ncol = d, byrow = TRUE)
-  list(beta = beta, V = sm$P, q = q)
+  list(beta = beta, V = sm$P, q = q, af = sm$af, Pf = sm$Pf)
 }
 
 ## Spatial-block cluster-robust covariance for the constant coefficients.
@@ -441,4 +442,37 @@
     Vof  <- Rc * outer(sdn, sdn)
   }
   list(V = Vof, G = G)
+}
+
+## Direct (fit-independent) estimate of the link-scale field variance, used as a
+## floor for the sill of the per-stage variance bound (cf_dglm(stage_bound = TRUE)).
+## The sill var(sum_r Z_r) of the fitted field shrinks with it when the cascade
+## underfits (e.g. when the AR(1) Q estimated on the coarsest band collapses
+## towards 0 and every scale is pulled to zero), and then caps the predictive
+## variance far below the actual error. Here: working residual of the GLM without
+## the field, its weighted variance minus a nugget from same-time nearest-
+## neighbour differences (noise plus the field difference at the neighbour
+## spacing, so the estimate is slightly conservative for a rough field).
+#' @keywords internal
+#' @noRd
+.dglm_field_var_direct <- function(y, X, offset, family, coords, tk) {
+  g <- tryCatch(suppressWarnings(stats::glm.fit(X, y, offset = offset, family = family)),
+                error = function(e) NULL)
+  if (is.null(g)) return(NA_real_)
+  b <- g$coefficients; b[!is.finite(b)] <- 0
+  eta <- drop(X %*% b) + offset
+  zw  <- .dglm_work(family, eta, y, offset)
+  r   <- zw$z - (.dglm_clip_l(eta, family) - offset); w <- zw$w
+  ok  <- is.finite(r) & is.finite(w) & w > 0
+  if (sum(ok) < 10) return(NA_real_)
+  m   <- sum(w[ok] * r[ok]) / sum(w[ok]); v <- sum(w[ok] * (r[ok] - m)^2) / sum(w[ok])
+  num <- den <- 0
+  for (t in unique(tk[ok])) {
+    i <- which(ok & tk == t); if (length(i) < 3) next
+    nn <- FNN::get.knn(coords[i, , drop = FALSE], 1)$nn.index[, 1]
+    h  <- 2 / (1 / w[i] + 1 / w[i][nn])                        # harmonic weight of the pair
+    num <- num + sum(h * (r[i] - r[i][nn])^2) / 2; den <- den + sum(h)
+  }
+  if (den <= 0) return(NA_real_)
+  max(v - num / den, 0)
 }

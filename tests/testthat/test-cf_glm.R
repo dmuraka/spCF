@@ -109,3 +109,63 @@ test_that("print() shows tables, not deparsed columns", {
   expect_true(any(grepl("Coefficients", out)))
   expect_true(any(grepl("Error statistics", out)))
 })
+
+test_that("negbin() estimates theta and gives a negative binomial predictive", {
+  set.seed(21)
+  y  <- rnbinom(length(d$field), size = 2, mu = exp(0.5 + 0.5 * d$field))
+  hv <- quiet(cf_glm_hv(y = y, x = d$x, coords = d$coords, family = negbin()))
+  th <- hv$other$family$theta
+  expect_true(is.finite(th) && th > 0.3 && th < 30)
+  m  <- quiet(cf_glm(y = y, x = d$x, coords = d$coords, mod_hv = hv))
+  expect_true(all(m$pred$pred > 0))
+  expect_true(all(is.finite(m$pred$pred_sd)))
+  expect_identical(m$other$calibration$type, "negbin")
+  ## observation SD exceeds the Poisson SD sqrt(mu) (over-dispersion)
+  expect_true(mean(m$pred$pred_sd^2) > mean(m$pred$pred))
+})
+
+test_that("negbin(theta) matches MASS::negative.binomial(theta)", {
+  skip_if_not_installed("MASS")
+  set.seed(22)
+  y  <- rnbinom(length(d$field), size = 2, mu = exp(0.5 + 0.5 * d$field))
+  h1 <- quiet(cf_glm_hv(y = y, x = d$x, coords = d$coords, family = negbin(2)))
+  h2 <- quiet(cf_glm_hv(y = y, x = d$x, coords = d$coords,
+                        family = MASS::negative.binomial(2)))
+  m1 <- quiet(cf_glm(y = y, x = d$x, coords = d$coords, mod_hv = h1))
+  m2 <- quiet(cf_glm(y = y, x = d$x, coords = d$coords, mod_hv = h2))
+  expect_equal(m1$pred$pred, m2$pred$pred, tolerance = 1e-8)
+  expect_equal(m1$beta$coef, m2$beta$coef, tolerance = 1e-8)
+})
+
+test_that("poisson(identity) fits with positive means", {
+  set.seed(23)
+  y  <- rpois(length(d$field), 3 + d$field)
+  hv <- quiet(cf_glm_hv(y = y, x = d$x, coords = d$coords,
+                        family = poisson(link = "identity")))
+  m  <- quiet(cf_glm(y = y, x = d$x, coords = d$coords,
+                     x0 = d$x[1:10, ], coords0 = d$coords[1:10, ], mod_hv = hv))
+  expect_true(all(m$pred$pred > 0) && all(m$pred0$pred > 0))
+  expect_true(all(is.finite(m$pred$pred_sd)))
+})
+
+test_that("Gamma, inverse Gaussian and quasi families get an observation predictive", {
+  set.seed(24)
+  mu <- exp(0.3 + 0.4 * d$field)
+  cases <- list(
+    gamma = list(Gamma(link = "log"), rgamma(length(mu), shape = 4, rate = 4 / mu), "gamma_moment"),
+    invg  = list(inverse.gaussian(link = "log"), mu * exp(rnorm(length(mu), 0, 0.2)), "invgauss_moment"),
+    qpois = list(quasipoisson(), rnbinom(length(mu), size = 2, mu = mu), "count_moment"),
+    qbin  = list(quasibinomial(), plogis(qlogis(0.5) + 0.4 * d$field + rnorm(length(mu), 0, 0.3)),
+                 "beta_moment"))
+  for (cs in cases) {
+    hv <- quiet(cf_glm_hv(y = cs[[2]], x = d$x, coords = d$coords, family = cs[[1]]))
+    m  <- quiet(cf_glm(y = cs[[2]], x = d$x, coords = d$coords,
+                       x0 = d$x[1:10, ], coords0 = d$coords[1:10, ], mod_hv = hv))
+    expect_identical(m$other$calibration$type, cs[[3]])
+    expect_true(all(is.finite(m$pred$pred_sd)) && all(m$pred$pred_sd > 0))
+    expect_true(all(is.finite(m$pred0$pred_sd)))
+    expect_true(all(apply(as.matrix(m$pred_q), 1, function(r) all(diff(r) >= -1e-8))))
+    ## the observation predictive is wider than the mean (signal) uncertainty
+    expect_gt(mean(m$pred$pred_sd), mean(m$pred_signal$pred_sd))
+  }
+})

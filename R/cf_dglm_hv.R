@@ -33,6 +33,11 @@
 #' @param family Error distribution and link function, consistent with the
 #'   \code{family} argument of \code{\link{glm}}. Functionality has been
 #'   confirmed for \code{gaussian()}, \code{poisson()}, and \code{binomial()}.
+#'   Negative binomial responses: \code{\link{negbin}()} estimates the
+#'   dispersion \eqn{\theta} (re-estimated on the training samples after each
+#'   accepted scale); \code{negbin(theta)} or \code{MASS::negative.binomial(theta)}
+#'   keeps it fixed. \code{poisson(link = "identity")} is supported with the mean
+#'   floored at a small positive value.
 #' @param rho,Q Optional AR(1) temporal parameters (autocorrelation and
 #'   innovation variance). When \code{NULL} (default) a single global
 #'   \code{(rho, Q)} is estimated by maximum marginal likelihood.
@@ -71,7 +76,7 @@
 #' @references
 #' Murakami, D. (2026).
 #' Fast covariance-free spatiotemporal modeling via coarse-to-fine learning.
-#' *ArXiv preprint*.
+#' *ArXiv preprint*, 2608.03449.
 #'
 #' @seealso \code{\link{cf_dglm}}, \code{\link{cf_glm_hv}}
 #' @author Daisuke Murakami
@@ -87,6 +92,7 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
 
   .spcf_check_data(y = y, x = x, coords = coords, offset = offset, time = time)
   .spcf_check_hv_args(length(y), train_rat, id_train, alpha, kernel)
+  family <- .spcf_prepare_family(family)
   if (!is.null(q_tvc) && (!is.numeric(q_tvc) || anyNA(q_tvc) ||
                           any(!is.finite(q_tvc)) || any(q_tvc <= 0)))
     .spcf_stop("'q_tvc' must be positive and finite (a scalar, or one value per covariate in 'tvc').")
@@ -160,6 +166,14 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
 
   ## ---- linearize once: pooled GLM working response/weight (Gaussian surrogate)
   beta <- stats::glm.fit(x, y, offset = offset, family = family)$coefficients
+  ## negbin(): estimate theta on the training observations at the pooled GLM
+  if (isTRUE(family$spcf_estimate_theta)) {
+    for (it in 1:3) {
+      mu_init <- family$linkinv(.dglm_clip_l(drop(x %*% beta) + offset, family))
+      family  <- .spcf_nb_update(family, y, mu_init, idx = id_train)
+      beta    <- stats::glm.fit(x, y, offset = offset, family = family)$coefficients
+    }
+  }
   eta  <- drop(x %*% beta) + offset
   zw   <- .dglm_work(family, eta, y, offset)
   beta_c <- beta; if (has_tv) beta_c[tv_cols] <- 0   # keep tv covariate effect in the residual
@@ -244,6 +258,7 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
   }
   message("--- Validation deviance: Basic GLM ---")
   pred_val <- matrix(0, length(vi), nT); Vval <- matrix(0, length(vi), nT); committed <- numeric(0)
+  Vval_st <- list(); cap_st <- numeric(0)          # per-scale holdout variances and field variances (stage bound)
   cumF_fit <- matrix(0, length(fi), nT)            # cumulative committed field at fit obs (link)
   xfc <- x[obs_f, const_cols, drop = FALSE]; offf <- offset[obs_f]
   tvpf <- if (has_tv) tvp[obs_f] else rep(0, length(obs_f))
@@ -269,15 +284,22 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
     trial  <- sum(family$dev.resids(yv_obs, mu_v, 1), na.rm = TRUE)
     if (trial < best - 1e-8) {
       pred_val <- cumF_val_try; Vval <- Vval + sc$Vpr; cumF_fit <- cumF_fit_try
+      Vval_st[[length(Vval_st) + 1L]] <- sc$Vpr_d / sc$P0     # distance-aware variance as a fraction of the knot prior
+      cap_st <- c(cap_st, stats::var(sc$Ftr[cbind(fi_row, fi_col)]))
       b_const  <- b_try; committed <- c(committed, b); count <- 0L; comment <- ""
       ## refresh the working response/weights at the refit linearization so the
       ## next scale fits the updated working residual (field absorbed in offset).
       eta_f <- drop(xfc %*% b_const) + Of_try
+      ## negbin(): re-estimate theta on the fit observations after the accepted scale
+      if (isTRUE(family$spcf_estimate_theta))
+        family <- .spcf_nb_update(family, y[obs_f], family$linkinv(.dglm_clip_l(eta_f, family)))
       zwf <- .dglm_work(family, eta_f, y[obs_f], offf)
       Rfit[] <- NA_real_; Wfit[] <- NA_real_
       Rfit[cbind(fi_row, fi_col)] <- zwf$z - (eta_f - offf)   # = (y-mu)/mu' (field in offset)
       Wfit[cbind(fi_row, fi_col)] <- zwf$w
       best <- trial
+      ## re-base the holdout deviance at the updated theta (same-theta comparison next)
+      if (isTRUE(family$spcf_estimate_theta)) best <- dev_of(pred_val)
     } else { if (i > 10) count <- count + 1L; comment <- " no improvement" }
     Loss <- c(Loss, best); Loss_name <- c(Loss_name, paste0("scale ", i))
     message(paste0(formatC(best, digits = 7, format = "g"), " (Scale ", i, ")", comment))
@@ -339,6 +361,31 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
     tau  <- min(max(exp(log(tau_raw) * rel), 1e-2), 1e2)
   } else tau <- 1
   if (!is.finite(tau)) tau <- 1
+  ## Per-stage bound (internal_stage_var.R; cf_dglm(stage_bound = TRUE)): solve
+  ## the same moment equation with the calibrated field variance
+  ## sum_r min(tau * V_r, kappa s_r^2), the stage caps rescaled to sum to the
+  ## variance of the fitted total field. tau above (total variance) is kept for
+  ## stage_bound = FALSE. Not for binomial (its field variance is left uncapped).
+  tau_stage <- NA_real_
+  sill_hv <- max(stats::var(cumF_fit[cbind(fi_row, fi_col)]),
+                 .dglm_field_var_direct(y[obs_f], x[obs_f, , drop = FALSE], offset[obs_f], family,
+                                        coords[obs_f, , drop = FALSE], pn$tk[obs_f]), na.rm = TRUE)
+  okst <- !is.na(resid_val) & is.finite(Wval) & (Wval > 0)
+  if (length(Vval_st) && family$family != "binomial" && is.finite(sill_hv) && sill_hv > 0 && sum(okst) >= 2) {
+    caps <- cap_st; caps[!is.finite(caps)] <- 0
+    if (sum(caps) > 0) {
+      caps <- caps * sill_hv / sum(caps)
+      ## stage r's variance at a holdout cell: caps_r * tau r / (1 + r (tau - 1)) with
+      ## r = Vd_r / P0 (internal_stage_var.R), reaching caps_r where the data say nothing
+      P  <- do.call(cbind, lapply(Vval_st, function(V) { v <- V[okst]; v[!is.finite(v)] <- 1; pmin(pmax(v, 0), 1) }))
+      Ws <- Wval[okst]
+      vs <- sum(Ws * resid_val[okst]^2) / sum(Ws); ns <- vs - sig2
+      ses <- sqrt(2 / sum(okst)) * vs
+      rels <- if (ns > 0 && is.finite(ses) && ses > 0) ns^2 / (ns^2 + ses^2) else 0
+      tau_stage <- min(max(exp(log(.spcf_stage_tau_raw_ratio(P, caps, ns, Ws)) * rels), 1e-2), 1e2)
+      if (!is.finite(tau_stage)) tau_stage <- NA_real_
+    }
+  }
 
   ## ---- genuine out-of-sample validation metrics: the selected model is trained
   ## on the training locations only and evaluated at the held-out (validation)
@@ -365,7 +412,7 @@ cf_dglm_hv <- function(y, x = NULL, coords, time, offset = NULL,
                 kernel = kernel, family = family, rho = rho, Q = Q,
                 sigma = sqrt(max(sig2, 0)),            # data-noise SD (link/working scale)
                 x_sel = x_sel, xname = xname, seed = seed,
-                time_levels = lev, tau = tau, tv_cols = tv_cols, q_tvc = q_tvc)
+                time_levels = lev, tau = tau, tau_stage = tau_stage, tv_cols = tv_cols, q_tvc = q_tvc)
   result <- list(loss_hv = loss_hv, loss_hv_all = loss_hv_all, e_summary = e_summary,
                  val_pred = val_pred, id_train = id_train, other = other, call = match.call())
   class(result) <- "cf_dglm_hv"

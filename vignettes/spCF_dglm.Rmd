@@ -206,7 +206,7 @@ Uncertainty is smallest near the monitoring stations and grows towards the edges
 
 ### Forecasting an unobserved time point
 
-`time0` may contain time points that carry no observations. Interior gaps are interpolated and time points beyond the last observed one are forecast, in both cases through the AR(1) predict step of each scale. January 2006 was requested above, so its map is already available:
+`time0` may contain time points that carry no observations. They are predicted from the smoothed AR(1) states of the knots of each scale, without changing the fit: a time point between two observed ones is bridged between their states, and a time point after the last observed one is forecast, by as many AR(1) steps as months have passed. January 2006 was requested above, so its map is already available:
 
 ```{r, fig.width=7.5, fig.height=4}
 grid_sf$Jan2006 <- mod$pred0$pred[time0 == 61]
@@ -220,7 +220,46 @@ The forecast keeps the seasonal fixed effect but the spatial field is pulled tow
 tapply(mod$pred0$pred_sd, time0, mean)
 ```
 
-The average predictive SD is markedly larger at the forecast month than at the two observed months. Adding a future time point does not alter the fit itself: the accepted bandwidths and the training-time predictions are unchanged.
+The average predictive SD is markedly larger at the forecast month than at the two observed months. Requesting such time points does not alter the fit itself: the accepted bandwidths and the training-time predictions are unchanged.
+
+### Prediction at new sites and times with `predict()`
+
+The prediction sites and times need not be given when the model is fitted. The model can be fitted without `x0`, `coords0` and `time0`, and `predict()` then predicts at any sites and time points later from the fitted object alone, without the training data. The result is identical to giving the same sites and times to `cf_dglm()`. For example, the forecast for March 2006 (`time = 63`) at the grid cells, with a 90% prediction interval:
+
+```{r, eval = FALSE}
+mod_f <- cf_dglm(y = y, x = x, coords = coords, time = time,
+                 mod_hv = mod_hv)                    # no x0, coords0, time0
+p63   <- predict(mod_f, coords0 = gxy, time0 = rep(63, ng),
+                 x0 = data.frame(sin12 = rep(sin(2 * pi * 3 / 12), ng),
+                                 cos12 = rep(cos(2 * pi * 3 / 12), ng)),
+                 probs = c(0.05, 0.95))
+```
+
+`predict()` can be applied to `mod` above as well, which avoids refitting here:
+
+```{r}
+p63 <- predict(mod, coords0 = gxy, time0 = rep(63, ng),
+               x0 = data.frame(sin12 = rep(sin(2 * pi * 3 / 12), ng),
+                               cos12 = rep(cos(2 * pi * 3 / 12), ng)),
+               probs = c(0.05, 0.95))
+head(p63)
+```
+
+### Predictive quantiles and the size of the fitted object
+
+`mod$pred_q` and `mod$pred0_q` give the predictive quantiles at the levels 0.005, 0.025, 0.05, 0.1, ..., 0.9, 0.95, 0.975, 0.995 (other levels with `predict(..., probs = )`); for example a 90% interval at the forecast month:
+
+```{r}
+head(mod$pred0_q[time0 == 61, c("q0.05", "q0.95")])
+```
+
+A `cf_dglm` fit holds its predictions for every site and time point, so for long panels the fitted object can become large. The quantile tables are therefore not stored but computed when accessed, and the scale-wise processes `Z`, `Z_sd`, `Z0` and `Z0_sd`, which take one column per selected scale for every observation, can be dropped with `keep_scales = FALSE`. Predictions, standard deviations and `sd_summary` are unchanged; only `sp_scalewise()` below needs the scale-wise processes:
+
+```{r, eval = FALSE}
+mod_small <- cf_dglm(y = y, x = x, coords = coords, time = time,
+                     x0 = x0, coords0 = coords0, time0 = time0,
+                     mod_hv = mod_hv, keep_scales = FALSE)
+```
 
 ## Multiscale space-time pattern extraction
 

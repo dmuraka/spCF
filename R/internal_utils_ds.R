@@ -71,7 +71,13 @@ initial_ds_fun <- function(Y, Y_type, x, a, coords, train_rat, Id_train=NULL,
     }
   }
   nx             <- ncol(x)
-  xname          <- names(data.frame(x))
+  ## label the intercept as cf_lm does; unnamed covariates become x1, x2, ...
+  cn             <- colnames(x)
+  if(is.null(cn)) cn <- rep("", nx)
+  cn[cn == "" | is.na(cn)] <- paste0("x", seq_len(nx) - 1L)[cn == "" | is.na(cn)]
+  cn[1]          <- "Intercept"
+  colnames(x)    <- cn
+  xname          <- cn
 
   if(is.null(a)) a <- rep(1, n)
 

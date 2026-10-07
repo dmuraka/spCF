@@ -15,7 +15,8 @@ cf_glm(
   mod_hv,
   robust_se = TRUE,
   se_type = c("prediction", "mean"),
-  se_method = c("opt", "classic")
+  se_method = c("opt", "classic"),
+  keep_scales = TRUE
 )
 }
 \arguments{
@@ -49,8 +50,14 @@ Set \code{FALSE} to use naive SEs (not recommended).}
 data point, holdout-calibrated on the \code{cf_glm_hv} validation samples
 (Gaussian: mean uncertainty + residual variance, split-conformal SD
 scaling; Poisson: negative-binomial count predictive; binomial: temperature
--calibrated probability with \code{pred_sd = sqrt(p(1-p))}). The mean/signal
-versions are kept in \code{pred_signal}/\code{pred_q_signal}.
+-calibrated probability with \code{pred_sd = sqrt(p(1-p))}).
+Negative binomial (\code{\link{negbin}}): negative-binomial count
+predictive with the fitted dispersion. Other families use a moment-matched
+observation predictive with the holdout-estimated dispersion (Gamma: gamma;
+inverse.gaussian: inverse Gaussian; quasipoisson: negative binomial;
+quasibinomial: beta for proportions, as binomial for 0/1 data; otherwise
+normal), with the mean-uncertainty scale calibrated to 95\% holdout coverage.
+The mean/signal versions are kept in \code{pred_signal}/\code{pred_q_signal}.
 \code{"mean"} returns the signal (mean) uncertainty only (previous
 behaviour). See \code{other$calibration} for the fitted calibration.}
 
@@ -61,6 +68,14 @@ the calibrated field variance back with a within-block \code{exp(-d/h)}
 correlation (\code{h} = median committed bandwidth); this is near-nominal. A refit-free leverage leave-one-out ceiling then caps the field term, preventing over-coverage for count (Poisson) responses while leaving already-calibrated families unchanged.
 \code{"classic"} keeps the realised field inside the working residual (the
 previous behaviour), which is valid but conservative.}
+
+\item{keep_scales}{If \code{TRUE} (default), the scale-wise processes
+\code{Z}, \code{Z_sd}, \code{Z0} and \code{Z0_sd} are kept in the output.
+They hold one column per selected scale for every sample (and prediction) site, which makes them the
+largest part of the fitted object for large data. With \code{FALSE} they are
+dropped (\code{NULL}); predictions, standard errors, \code{sd_summary} and
+the maps of \code{\link{spCFmap}} for the total prediction are unchanged,
+but \code{\link{sp_scalewise}} needs them.}
 }
 \value{
 A list with the following elements:
@@ -83,7 +98,10 @@ A list with the following elements:
   \code{q0.05}, \code{q0.1}, ..., \code{q0.9}, \code{q0.95}, \code{q0.975},
   \code{q0.995} give the corresponding quantile levels, obtained by
   Gaussian approximation on the link scale followed by inverse-link
-  transformation.}
+  transformation (with \code{se_type = "prediction"}, from the calibrated
+  observation predictive). Not stored in the object: \code{mod$pred_q}
+  computes it on access, at the 15 levels listed above;
+  \code{\link{predict.cf_glm}} gives them at other levels and at new sites.}
   \item{pred0_q}{Predictive quantiles on the response scale at the
   prediction sites. Column structure is identical to \code{pred_q}.
   \code{NULL} when prediction sites are not supplied.}
@@ -96,12 +114,20 @@ A list with the following elements:
   \item{Z0}{Predictive mean of the spatial process at each scale
   (prediction sites; list).}
   \item{Z0_sd}{Predictive standard deviation of the spatial process at each
-  scale (prediction sites; list).}
+  scale (prediction sites; list). \code{Z}, \code{Z_sd}, \code{Z0} and
+  \code{Z0_sd} are \code{NULL} when \code{keep_scales = FALSE}.}
   \item{other}{Other internally used output objects.}
 }
 }
 \description{
 Scalable prediction, regression, and multiscale analysis via CF-GLMMs.
+}
+\details{
+The link-scale spatial-process predictive variance is bounded stage by stage
+as in \code{\link{cf_lm}}: \eqn{\min(\tau\, pv_r, \kappa s_r^2)} with the stage
+caps rescaled to sum to the marginal field variance, and the holdout factor
+\eqn{\tau} solving the working-weighted moment equation. For the binomial
+family the field variance is left uncapped.
 }
 \examples{
 ################ Example 1: Count data modeling/Disease mapping/smoothing
@@ -139,8 +165,6 @@ GGHB.IZ$z1  <- mod_s1$pred$pred
 GGHB.IZ$z2  <- mod_s2$pred$pred
 plot(GGHB.IZ[,c("z1","z2")],lwd=0.2,axes=TRUE,key.pos=4, nbreaks=50)# Extracted features
 
-### The same fit, explored interactively over a basemap
-# spCFmap(mod, crs = 27700)   # crs = the system the coordinates are in
 
 
 ################ Example 2: Binary data modeling/spatial prediction
@@ -184,6 +208,16 @@ plot(meuse.grid_sf[,c("z1","z2")], pch = 15,
 ### The same fit, explored interactively over a basemap
 # spCFmap(mod, crs = 28992)   # crs = the system the coordinates are in
 
+### Prediction with predict(): the model can be fitted WITHOUT prediction
+### sites (no x0, coords0) and used to predict at any sites later; the
+### training data are not needed then. For a binary response,
+### se_type = "mean" gives the quantiles of the probability (those of a
+### single 0/1 observation are degenerate).
+mod_f    <- cf_glm(y = y, x = x, coords = coords, mod_hv = mod_hv)  # no x0, coords0
+p        <- predict(mod_f, x0 = x0, coords0 = coords0,
+                    probs = c(0.025, 0.975), se_type = "mean")
+head(p)
+all.equal(p$pred, mod$pred0_signal$pred)   # same as cf_glm(..., coords0 = coords0)
 
 }
 \references{

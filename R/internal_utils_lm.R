@@ -150,7 +150,13 @@ add_mod <- function(add_learn="rf", train=TRUE, resid, x, coords, x0=NULL, coord
       qmat        <- qpred(X)
       qmat0       <- NULL
       if(!is.null(coords0)) qmat0 <- qpred(X0)
-      return(list(mod=qmods, pred=pred, pred0=pred0, qmat=qmat, qmat0=qmat0,
+      ## pmod is kept for prediction at new sites (predict.cf_lm); lightgbm
+      ## boosters are made serializable so that a saved fit still predicts
+      if(exists("lgb.make_serializable", envir=asNamespace("lightgbm"))){
+        pmod  <- lightgbm::lgb.make_serializable(pmod)
+        qmods <- lapply(qmods, lightgbm::lgb.make_serializable)
+      }
+      return(list(mod=qmods, pmod=pmod, pred=pred, pred0=pred0, qmat=qmat, qmat0=qmat0,
                   qlevels=qlevels, a_xname=a_xname, add_learn=add_learn))
     }
 
@@ -336,7 +342,7 @@ bopt_core <- function(par, bands, Z, beta_int,
 #' @noRd
 lwr <- function(coords, coords_uni, resid, x, band, b_old, vc,
                 ridge, coords_old=NULL, kernel, id_train, y, beta=NULL,
-                coords0, x0, sel_id=NULL, func="cf_lm"){
+                coords0, x0, sel_id=NULL, func="cf_lm", keep_state=FALSE){
 
   n            <- nrow(coords)
   nx           <- ncol(x)
@@ -419,7 +425,8 @@ lwr <- function(coords, coords_uni, resid, x, band, b_old, vc,
     threshold    = threshold,
     is_lm        = 1L,
     coords0_sexp = if(!is.null(coords0)) as.matrix(coords0) else NULL,
-    x0_sexp      = if(!is.null(coords0)) x0 else NULL)
+    x0_sexp      = if(!is.null(coords0)) x0 else NULL,
+    return_state = as.integer(isTRUE(keep_state)))
   b_all        <- fres$b_all
   bv_inv_all   <- fres$bv_inv_all
   pv_inv_all   <- fres$pv_inv_all
@@ -490,8 +497,21 @@ lwr <- function(coords, coords_uni, resid, x, band, b_old, vc,
     return(list(beta=b_all, beta_v=bv_all, beta_pv=pv_all, pred=pred, sel_id=sel_id,
                 coords_cent=coords_cent, beta0=b_all0, beta0_v=bv_all0,
                 beta0_pv=pv_all0, pred0=pred0, b_old=b_old, run=run,
-                sse_hv=sse_hv, vc_sel=vc))
+                sse_hv=sse_hv, vc_sel=vc,
+                state=.spcf_knot_state(fres$state, coords_cent, vc_int, band, kernel_id, threshold)))
   } else {
     return(list(run=FALSE))
   }
+}
+
+## Knot state of one scale for later prediction at new sites (lwr_scatter0_cpp).
+## Knots that contributed nothing are dropped; the order of the others, and
+## hence the summation order at a site, is kept.
+.spcf_knot_state <- function(st, coords_cent, vc_int, band, kernel_id, threshold){
+  if(is.null(st)) return(NULL)
+  keep <- !is.na(st$iw)
+  list(cent = matrix(coords_cent, ncol = 2)[keep, , drop = FALSE], iw = st$iw[keep],
+       b = st$b[keep, , drop = FALSE], ibv = st$ibv[keep, , drop = FALSE],
+       sig = st$sig[keep, , drop = FALSE], vc = vc_int, band = band,
+       kernel_id = kernel_id, threshold = threshold)
 }

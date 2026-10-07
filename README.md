@@ -148,7 +148,7 @@ See the R walk-throughs in
 [`vignettes/spCF_glm.Rmd`](vignettes/spCF_glm.Rmd),
 [`vignettes/spCF_downscale.Rmd`](vignettes/spCF_downscale.Rmd), and
 [`vignettes/spCF_dglm.Rmd`](vignettes/spCF_dglm.Rmd),
-and [`python/README.md`](python/README.md) for Python-specific notes
+and [`python/README.md`](https://github.com/dmuraka/spCF/blob/main/python/README.md) for Python-specific notes
 (including the `sd_method`, `se_type`, and `se_method` options that control the
 predictive SD and coefficient-SE estimators).
 

@@ -13,7 +13,8 @@ cf_lm(
   mod_hv,
   robust_se = TRUE,
   se_type = c("prediction", "mean"),
-  se_method = c("opt", "classic")
+  se_method = c("opt", "classic"),
+  keep_scales = TRUE
 )
 }
 \arguments{
@@ -46,9 +47,20 @@ signal (mean) uncertainty only (previous behaviour).}
 \code{robust_se = TRUE}). \code{"opt"} (default) splits the sandwich
 meat into a field-removed observation-noise part and a field part that adds
 the calibrated field variance back with a within-block \code{exp(-d/h)}
-correlation (\code{h} = median committed bandwidth); this is near-nominal. A refit-free leverage leave-one-out ceiling then caps the field term, preventing over-coverage for count (Poisson) responses while leaving already-calibrated families unchanged.
+correlation (\code{h} = median committed bandwidth); this is near-nominal.
+For \code{cf_lm} the noise part is rescaled to a nugget (observation-noise
+variance) estimated from nearest-neighbour differences of the fixed-effect
+residuals, because the in-sample residual is shrunk by the fitted field. A refit-free leverage leave-one-out ceiling then caps the field term, preventing over-coverage for count (Poisson) responses while leaving already-calibrated families unchanged.
 \code{"classic"} keeps the realised field inside the working residual (the
 previous behaviour), which is valid but conservative.}
+
+\item{keep_scales}{If \code{TRUE} (default), the scale-wise processes
+\code{Z}, \code{Z_sd}, \code{Z0} and \code{Z0_sd} are kept in the output.
+They hold one column per selected scale for every sample (and prediction) site, which makes them the
+largest part of the fitted object for large data. With \code{FALSE} they are
+dropped (\code{NULL}); predictions, standard errors, \code{sd_summary} and
+the maps of \code{\link{spCFmap}} for the total prediction are unchanged,
+but \code{\link{sp_scalewise}} needs them.}
 }
 \value{
 A list with the following elements:
@@ -61,7 +73,9 @@ A list with the following elements:
   `none`), and residuals.}
   \item{e_summary}{Holdout validation accuracy evaluated on the validation
   samples: R-squared (validation_R2), root mean squared error
-  (validation_RMSE), and mean absolute error (validation_MAE).}
+  (validation_RMSE), and mean absolute error (validation_MAE).
+  validation_R2 is NA when the holdout predictions are constant (no
+  covariates and no accepted scale).}
   \item{pred}{Predictive means and standard deviations (sample sites). When
   no additional learner is active, the spatial-process contribution to the
   predictive SD is rescaled by a holdout-calibrated factor (stored as
@@ -74,7 +88,9 @@ A list with the following elements:
   regression (CQR) on the validation samples; otherwise the quantiles are
   Gaussian about the predictive mean using the (tau-calibrated)
   \code{pred_sd}. \code{pred_sd} is a Gaussian-equivalent summary of these
-  quantiles.}
+  quantiles. Not stored in the object: \code{mod$pred_q} computes it on
+  access, at the 15 levels 0.005, 0.025, 0.05, 0.1, ..., 0.9, 0.95, 0.975, 0.995;
+  \code{\link{predict.cf_lm}} gives them at other levels and at new sites.}
   \item{pred0_q}{Predictive quantiles at the prediction sites; identical
   column structure to \code{pred_q}. \code{NULL} when prediction sites are
   not supplied.}
@@ -87,12 +103,24 @@ A list with the following elements:
   \item{Z0}{Predictive mean of the spatial process at each scale
   (prediction sites; list).}
   \item{Z0_sd}{Predictive standard deviation of the spatial process
-  at each bandwidth (prediction sites; list).}
+  at each bandwidth (prediction sites; list). \code{Z}, \code{Z_sd},
+  \code{Z0} and \code{Z0_sd} are \code{NULL} when
+  \code{keep_scales = FALSE}.}
   \item{other}{Other internally used output objects.}
 }
 }
 \description{
 Scalable prediction, regression, and multiscale analysis via Gaussian CFSM.
+}
+\details{
+The spatial-process predictive variance is bounded stage by stage: the
+calibrated variance of stage \eqn{r} is \eqn{\min(\tau\, pv_r, \kappa s_r^2)},
+where \eqn{pv_r} is the stage's predictive variance (infinite where no knot
+with data reaches the site), \eqn{s_r^2} the variance of the stage's fitted
+field over the sample sites, and \eqn{\kappa} rescales the caps to sum to the
+marginal field variance. The holdout factor \eqn{\tau} solves the
+corresponding moment equation. The predictive SD thus grows smoothly with the
+distance to the data and reaches the marginal field variance far from it.
 }
 \examples{
 set.seed(123)
@@ -146,6 +174,15 @@ plot(meuse.grid_sf3[,c("z1_sd","z2_sd","z3_sd")], pch = 15,
 
 ### The same fit, explored interactively over a basemap
 # spCFmap(mod, crs = 28992)   # crs = the system the coordinates are in
+
+### Prediction with predict(): the model can be fitted WITHOUT prediction
+### sites (no x0, coords0) and used to predict at any sites later; the
+### training data are not needed then
+mod_f    <- cf_lm(y = y, x = x, coords = coords, mod_hv = mod_hv)  # no x0, coords0
+p        <- predict(mod_f, x0 = x0, coords0 = coords0, probs = c(0.025, 0.975))
+head(p)                                   # pred, pred_sd, q0.025, q0.975
+all.equal(p$pred, mod$pred0$pred)         # same as cf_lm(..., coords0 = coords0)
+head(predict(mod_f, probs = c(0.1, 0.9))) # sample sites, 80 percent interval
 
 }
 \references{

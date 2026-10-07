@@ -1,7 +1,7 @@
 Package: spCF
 Type: Package
 Title: Coarse-to-Fine Spatial and Spatio-Temporal Modeling
-Version: 0.2.1
+Version: 0.2.2.1
 Authors@R: c(
     person("Daisuke",  "Murakami",   email = "dmuraka@ism.ac.jp",
            role = c("aut", "cre")) ,
@@ -20,7 +20,7 @@ Depends: R (>= 4.1.0)
 Imports: FNN, fields, nloptr, dbscan, withr, Matrix, Rcpp
 LinkingTo: Rcpp
 Suggests: sp, sf, knitr, rmarkdown, CARBayesdata, ranger, lightgbm, shiny,
-    bslib, leaflet, terra, testthat (>= 3.0.0)
+    bslib, leaflet, terra, MASS, testthat (>= 3.0.0)
 Config/testthat/edition: 3
 Description: Provides functions for coarse-to-fine spatial and spatio-temporal modeling, enabling fast prediction, regression, and uncertainty quantification for moderate to large datasets. For methodological details, see Murakami et al. (2026) <doi:10.1111/gean.70034> and related work on generalized linear, downscaling, and dynamic spatio-temporal extensions.
 URL: https://github.com/dmuraka/spCF
